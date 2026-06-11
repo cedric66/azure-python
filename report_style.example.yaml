@@ -1,0 +1,46 @@
+# AKS Reporting Toolkit document export style example.
+# Copy this file, edit values, and pass it with:
+#   python aks_report.py convert README.md --to all --config my_style.yaml
+
+document:
+  title: "AKS Reporting Toolkit"
+  author: "Platform Engineering"
+  output_dir: "exports"
+
+  page:
+    # Supported: A4, Letter
+    size: "A4"
+    margin_top_in: 0.75
+    margin_bottom_in: 0.75
+    margin_left_in: 0.80
+    margin_right_in: 0.80
+
+  fonts:
+    body: "Aptos"
+    heading: "Aptos Display"
+    code: "Consolas"
+
+  sizes:
+    body_pt: 10.5
+    h1_pt: 20
+    h2_pt: 15
+    h3_pt: 12.5
+    code_pt: 9
+
+  colors:
+    # Hex values without '#'.
+    heading: "1F4E78"
+    accent: "1F4E78"
+    body: "111827"
+    table_header_fill: "1F4E78"
+    table_header_text: "FFFFFF"
+    code_fill: "F3F4F6"
+
+  paragraph:
+    space_after_pt: 6
+    line_spacing: 1.08
+
+  table:
+    # DOCX uses an installed Word table style name. PDF uses the colors above.
+    style: "Table Grid"
+    font_size_pt: 9

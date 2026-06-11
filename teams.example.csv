@@ -1,0 +1,4 @@
+pool,team,namespaces,workload_type,criticality
+paypool,payments,payments;payments-batch,stateless-api,2
+ordpool,orders,orders,stateless-api,3
+dataeng,data-engineering,data;etl,batch,1

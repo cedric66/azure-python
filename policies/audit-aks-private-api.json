@@ -1,0 +1,53 @@
+{
+  "properties": {
+    "displayName": "Audit AKS clusters without private API server",
+    "policyType": "Custom",
+    "mode": "Indexed",
+    "description": "Audits AKS managed clusters where the API server is not configured as private.",
+    "metadata": {
+      "category": "Kubernetes",
+      "version": "1.0.0",
+      "source": "aks-reporting-sandbox"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "metadata": {
+          "displayName": "Effect",
+          "description": "Enable, deny, or disable this policy."
+        },
+        "allowedValues": [
+          "Audit",
+          "Deny",
+          "Disabled"
+        ],
+        "defaultValue": "Audit"
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.ContainerService/managedClusters"
+          },
+          {
+            "anyOf": [
+              {
+                "field": "Microsoft.ContainerService/managedClusters/apiServerAccessProfile.enablePrivateCluster",
+                "exists": "false"
+              },
+              {
+                "field": "Microsoft.ContainerService/managedClusters/apiServerAccessProfile.enablePrivateCluster",
+                "equals": "false"
+              }
+            ]
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}

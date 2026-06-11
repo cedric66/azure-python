@@ -1,0 +1,149 @@
+
+[notice] A new release of pip is available: 26.0.1 -> 26.1.2
+[notice] To update, run: C:\Users\sp\Claude\Projects\office\aks-reporting\.venv\Scripts\python.exe -m pip install --upgrade pip
+
+=== fleet_inventory --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all ===
+[23:02:41] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:41] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:42] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_inventory_all_20260610_230241_972796.xlsx
+    OK -> aks_inventory_all_20260610_230241_972796.xlsx  sheets=['ReadMe', 'Clusters', 'NodePools', 'NetworkSecurity', 'Addons', 'Tags', 'Summary']
+
+=== fleet_inventory --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --env dev --cluster-prefix aks-dev ===
+[23:02:42] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:42] Clusters: 3 total, 2 after env filter (dev), 2 after cluster filter (prefix=aks-dev), 0 with unknown env
+[23:02:42] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_inventory_dev_prefix-aks-dev_20260610_230242_106068.xlsx
+    OK -> aks_inventory_dev_prefix-aks-dev_20260610_230242_106068.xlsx  sheets=['ReadMe', 'Clusters', 'NodePools', 'NetworkSecurity', 'Addons', 'Tags', 'Summary']
+
+=== aks_report inventory --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --env dev --cluster-prefix aks-dev ===
+
+Running: Fleet inventory
+
+[23:02:42] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:42] Clusters: 3 total, 2 after env filter (dev), 2 after cluster filter (prefix=aks-dev), 0 with unknown env
+[23:02:42] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_inventory_dev_prefix-aks-dev_20260610_230242_223168.xlsx
+    OK -> aks_inventory_dev_prefix-aks-dev_20260610_230242_223168.xlsx  sheets=['ReadMe', 'Clusters', 'NodePools', 'NetworkSecurity', 'Addons', 'Tags', 'Summary']
+
+=== architecture_design --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all --cluster aks-dev-01 --no-doc ===
+[23:02:42] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:42] Clusters: 3 total, 3 after env filter (none), 1 after cluster filter (exact=aks-dev-01), 0 with unknown env
+[23:02:42] Design scope: cluster_set (MC_rg-apps-dev_aks-dev-01_eastus, rg-apps-dev)
+[23:02:42] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_design_all_exact-aks-dev-01_20260610_230242_326088.xlsx
+    OK -> aks_design_all_exact-aks-dev-01_20260610_230242_326088.xlsx  sheets=['ReadMe', 'DesignSummary', 'Clusters', 'NodePools', 'Network', 'Subnets', 'Resources', 'ResourceCounts', 'Components', 'Diagrams']
+
+=== cluster_deepdive --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all --cluster aks-dev-01 ===
+[23:02:42] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:42] Clusters: 3 total, 3 after env filter (none), 1 after cluster filter (exact=aks-dev-01), 0 with unknown env
+[23:02:42] Analyzing aks-dev-01 (contoso-dev / eastus)
+[23:02:42] Cost 1/4: daily amortized by meter & pricing model (node resource group)...
+[23:02:42] Cost 2/4: daily amortized by resource (node pool mapping)...
+[23:02:42] Cost 3/4: managed cluster resource fee (uptime SLA etc.)...
+[23:02:42] Cost 4/4: monthly ACTUAL cost for amortized-vs-actual comparison...
+[23:02:42] Activity log: control-plane writes (90 days)...
+[23:02:42] Platform metrics: node CPU / memory (30 days)...
+[23:02:42] Cost Management calls used: 4
+[23:02:42] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_deepdive_aks-dev-01_all_exact-aks-dev-01_20260610_230242_466887.xlsx
+    OK -> aks_deepdive_aks-dev-01_all_exact-aks-dev-01_20260610_230242_466887.xlsx  sheets=['ReadMe', 'Summary', 'DailyCost', 'CostByMeter', 'CostByNodePool', 'AmortizedVsActual', 'SKUChanges', 'NodePools', 'Utilization', 'ActivityLog']
+
+=== fleet_cost --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all --actual ===
+[23:02:42] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:42] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:42] Cost window 2026-03-01 to 2026-06-10; ~8 Cost Management queries across 2 subscriptions.
+[23:02:42] Cost Management is QPU-throttled tenant-wide; the client paces itself and honors retry-after on 429, so a big fleet just takes a few minutes.
+[23:02:42] [1/2] contoso-dev: 2 clusters, 2 node RGs
+[23:02:42] [2/2] contoso-prod: 1 clusters, 1 node RGs
+[23:02:42] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_fleet_cost_all_20260610_230242_619714.xlsx
+    OK -> aks_fleet_cost_all_20260610_230242_619714.xlsx  sheets=['ReadMe', 'ClusterCosts', 'PricingModelSplit', 'TopMovers', 'MeterChanges', 'BySubscription', 'RawMonthly']
+
+=== version_eol --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all ===
+[23:02:42] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:42] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:42] Fetching supported AKS versions for 3 region(s)...
+[23:02:42] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_version_eol_all_20260610_230242_704369.xlsx
+    OK -> aks_version_eol_all_20260610_230242_704369.xlsx  sheets=['ReadMe', 'VersionStatus', 'NodeImageAge', 'SupportedVersions', 'Summary', 'SummaryByEnv']
+
+=== spot_opportunity --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --nonprod ===
+[23:02:42] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:42] Clusters: 3 total, 2 after env filter (nonprod), 2 after cluster filter (none), 0 with unknown env
+[23:02:42] Looking up retail prices for 2 (region, size) combos...
+[23:02:43] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_spot_opportunity_nonprod_20260610_230243_261909.xlsx
+    OK -> aks_spot_opportunity_nonprod_20260610_230243_261909.xlsx  sheets=['ReadMe', 'SpotToday', 'Candidates', 'PriceReference', 'Summary']
+
+=== spot_cluster_report --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all --only-spot-clusters ===
+[23:02:43] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:43] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:43] Collecting spot configuration and amortized cost for 2 cluster(s)...
+[23:02:43] [1/2] contoso-dev: cost for 1 node resource group(s)
+[23:02:43] [2/2] contoso-prod: cost for 1 node resource group(s)
+[23:02:43] Cost Management calls used: 8
+[23:02:43] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_spot_clusters_all_20260610_230243_422371.xlsx
+    OK -> aks_spot_clusters_all_20260610_230243_422371.xlsx  sheets=['ReadMe', 'ClusterSpotSummary', 'SpotNodePools', 'OnDemandNodePools', 'NodePoolSkuSummary', 'AutoscalerConfig', 'SpotAssessment', 'CostByCluster', 'CostTrend', 'CostByNodePool', 'OtherCostItems', 'CostByMeter', 'RawResourceCost']
+
+=== utilization_idle --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all --days 3 ===
+[23:02:43] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:43] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:43] Querying platform metrics for 3 clusters (3 days, paced)...
+[23:02:43] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_utilization_all_20260610_230243_575778.xlsx
+    OK -> aks_utilization_all_20260610_230243_575778.xlsx  sheets=['ReadMe', 'Utilization', 'IdleCandidates', 'Stopped', 'Summary']
+
+=== governance --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all ===
+[23:02:43] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:43] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:43] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_governance_all_20260610_230243_638111.xlsx
+    OK -> aks_governance_all_20260610_230243_638111.xlsx  sheets=['ReadMe', 'Scorecard', 'FailDetails', 'FailuresByCheck', 'CheckLegend']
+
+=== policy_report --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all ===
+[23:02:43] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:43] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:43] [1/2] contoso-dev: policy assignments + AKS compliance states...
+[23:02:43] [2/2] contoso-prod: policy assignments + AKS compliance states...
+[23:02:43] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_policy_all_20260610_230243_727511.xlsx
+    OK -> aks_policy_all_20260610_230243_727511.xlsx  sheets=['ReadMe', 'Assignments', 'ClusterCompliance', 'NonCompliantDetail', 'KubernetesBlindSpots', 'Summary']
+
+=== network_ip_capacity --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all ===
+[23:02:43] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:43] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:43] Resource Graph: fetching VNet subnet metadata for 2 subscription(s)...
+[23:02:43] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_network_ip_capacity_all_20260610_230243_805852.xlsx
+    OK -> aks_network_ip_capacity_all_20260610_230243_805852.xlsx  sheets=['ReadMe', 'ClusterNetwork', 'SubnetCapacity', 'PoolSubnetUse', 'Issues', 'Summary', 'SummaryByModel', 'SummaryBySubnetStatus']
+
+=== tag_chargeback --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all ===
+[23:02:43] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:43] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:43] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_tag_chargeback_all_20260610_230243_905572.xlsx
+    OK -> aks_tag_chargeback_all_20260610_230243_905572.xlsx  sheets=['ReadMe', 'TagMatrix', 'MissingTags', 'TagCoverage', 'TagValues', 'RawTags', 'Summary', 'SummaryBySubscription', 'SummaryByEnvironment']
+
+=== optimization_report --csv C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\subscriptions.csv --out C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports --all --days 3 ===
+[23:02:43] Resource Graph: fetching clusters, resource groups and subscription names...
+[23:02:43] Clusters: 3 total, 3 after env filter (none), 3 after cluster filter (none), 0 with unknown env
+[23:02:43] Cost window 2026-03-01 to 2026-06-10; querying amortized cost by node RG and pricing model...
+[23:02:43] [1/2] contoso-dev: 2 clusters, 2 node RGs
+[23:02:43] [2/2] contoso-prod: 1 clusters, 1 node RGs
+[23:02:43] Querying utilization metrics for 3 clusters (3 days)...
+[23:02:44] Cost Management calls used: 4
+[23:02:44] Report written: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports\aks_optimization_all_20260610_230244_009082.xlsx
+    OK -> aks_optimization_all_20260610_230244_009082.xlsx  sheets=['ReadMe', 'ExecutiveSummary', 'SavingsCandidates', 'ClusterCostUtilization', 'PricingModelSplit', 'RawMonthly']
+Wrote: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\exports\sample.docx
+Wrote: C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\exports\sample.pdf
+
+Sandbox plan
+
+  subscription:          contoso-sandbox
+  subscription_id:       11111111-1111-1111-1111-111111111111
+  resource_group:        rg-aks-sandbox-dev
+  location:              eastus
+  cluster:               aks-sbx-policy-01
+  node_pools:            sys:System:Standard_D4s_v5
+  policy_definitions:    0
+  policy_assignments:    0
+  default_policy_scope:  resource_group
+  policy_report_scope:   sandbox
+
+Commands:
+  python aks_report.py sandbox deploy C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\sandbox.json --yes --wait
+  python aks_report.py sandbox policy-apply C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\sandbox.json --yes
+  python aks_report.py sandbox scan C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\sandbox.json --yes
+  python aks_report.py sandbox report C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\sandbox.json
+  python aks_report.py sandbox cleanup C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\sandbox.json --yes
+
+ALL SMOKE TESTS PASSED  (outputs in C:\Users\sp\AppData\Local\Temp\aksrep_omdr0udi\reports)
+DONE_OK 

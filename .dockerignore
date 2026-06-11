@@ -1,0 +1,10 @@
+.git
+.venv
+__pycache__/
+**/__pycache__/
+*.pyc
+reports/
+exports/
+.codex_tmp/
+.pytest_cache/
+.uv-cache/

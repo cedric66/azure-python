@@ -1,0 +1,113 @@
+# Copy this file to sandbox.yaml and edit it for your Azure sandbox.
+# All write/delete operations require:
+#   python aks_report.py sandbox <command> sandbox.yaml --yes
+
+subscription_id: "00000000-0000-0000-0000-000000000000"
+subscription_name: "my-aks-sandbox"
+environment: "sandbox"
+
+# Azure resource group to create/use for the test cluster.
+resource_group: "rg-aks-sandbox-dev"
+location: "eastus"
+deployment_name: "aks-sandbox-policy-test"
+
+tags:
+  environment: "sandbox"
+  owner: "platform"
+  workload: "aks-policy-test"
+  costcenter: "sandbox"
+
+safety:
+  # Default false means write/delete commands only run when the RG or cluster
+  # name contains sandbox, sbx, test, or lab.
+  allow_non_sandbox_names: false
+
+cluster:
+  name: "aks-sbx-policy-01"
+  dns_prefix: "aks-sbx-policy-01"
+  # Leave blank to let Azure pick a supported default version.
+  kubernetes_version: ""
+  sku_name: "Base"
+  sku_tier: "Free"
+
+  enable_rbac: true
+  disable_local_accounts: true
+  private_cluster: false
+  authorized_ip_ranges: []
+  azure_policy_addon: true
+  oidc_issuer: true
+  workload_identity: true
+
+  network:
+    plugin: "azure"
+    plugin_mode: "overlay"
+    policy: "azure"
+    load_balancer_sku: "standard"
+    outbound_type: "loadBalancer"
+    service_cidr: "10.240.0.0/16"
+    dns_service_ip: "10.240.0.10"
+    pod_cidr: "10.244.0.0/16"
+
+  # AKS node pools. Keep one System pool; add User or Spot pools as needed.
+  node_pools:
+    - name: "sys"
+      mode: "System"
+      vm_size: "Standard_D4s_v5"
+      count: 2
+      autoscaling: true
+      min_count: 1
+      max_count: 3
+      os_type: "Linux"
+      os_sku: "Ubuntu"
+      max_pods: 30
+      zones: ["1", "2", "3"]
+
+    - name: "usr"
+      mode: "User"
+      vm_size: "Standard_D4s_v5"
+      count: 1
+      autoscaling: true
+      min_count: 0
+      max_count: 3
+      os_type: "Linux"
+      os_sku: "Ubuntu"
+      max_pods: 30
+      zones: ["1", "2", "3"]
+
+    # Uncomment when you want a spot node-pool test.
+    # - name: "spt"
+    #   mode: "User"
+    #   vm_size: "Standard_D4s_v5"
+    #   count: 1
+    #   autoscaling: true
+    #   min_count: 0
+    #   max_count: 3
+    #   priority: "Spot"
+    #   eviction_policy: "Delete"
+    #   spot_max_price: -1
+
+policies:
+  # Where assignments go by default: subscription, resource_group, cluster,
+  # or a full Azure resource ID.
+  assignment_scope: "resource_group"
+
+  # Where to trigger Azure Policy evaluation: subscription or resource_group.
+  scan_scope: "subscription"
+
+  definitions:
+    - name: "audit-aks-private-api"
+      file: "policies/audit-aks-private-api.json"
+
+  assignments:
+    - name: "audit-aks-private-api"
+      display_name: "Audit AKS clusters without private API server"
+      definition_id: "custom:audit-aks-private-api"
+      scope: "resource_group"
+      # Use DoNotEnforce first in sandbox to observe compliance without deny impact.
+      enforcement_mode: "DoNotEnforce"
+      parameters:
+        effect: "Audit"
+
+cleanup:
+  # Set to true only when this RG is disposable.
+  delete_resource_group: true
