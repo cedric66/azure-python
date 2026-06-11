@@ -82,7 +82,7 @@ def main(argv=None):
         "",
         "Source: Azure Resource Graph (control-plane data only, no kubectl needed).",
         "Environment is resolved from cluster tags, then resource group tags (keys: %s)," % args.env_tag_keys,
-        "then the environment column of the input CSV. '(unknown)' means none were set.",
+        "then cluster/resource-group/name inference. '(unknown)' means none matched.",
         "",
         "Tabs: Clusters (one row per cluster), NodePools (one row per pool),",
         "NetworkSecurity, Addons, Tags (exploded key/value), Summary (counts).",

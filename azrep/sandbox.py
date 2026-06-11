@@ -147,11 +147,11 @@ def print_plan(cfg):
     for key, value in plan_summary(cfg):
         print("  %-22s %s" % (key + ":", value))
     print("\nCommands:")
-    print("  python aks_report.py sandbox deploy %s --yes --wait" % cfg["_config_path"])
-    print("  python aks_report.py sandbox policy-apply %s --yes" % cfg["_config_path"])
-    print("  python aks_report.py sandbox scan %s --yes" % cfg["_config_path"])
-    print("  python aks_report.py sandbox report %s" % cfg["_config_path"])
-    print("  python aks_report.py sandbox cleanup %s --yes" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox deploy %s --yes --wait" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox policy-apply %s --yes" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox scan %s --yes" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox report %s" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox cleanup %s --yes" % cfg["_config_path"])
 
 
 def build_node_pool(pool):
@@ -424,12 +424,11 @@ def delete_resource_group(session, cfg):
 def write_temp_sub_csv(cfg):
     tmp = tempfile.NamedTemporaryFile("w", newline="", suffix=".csv", delete=False, encoding="utf-8")
     with tmp:
-        writer = csv.DictWriter(tmp, fieldnames=["subscription_id", "subscription_name", "environment", "include"])
+        writer = csv.DictWriter(tmp, fieldnames=["subscription_id", "subscription_name", "include"])
         writer.writeheader()
         writer.writerow({
             "subscription_id": sub_id(cfg),
             "subscription_name": cfg.get("subscription_name") or "sandbox",
-            "environment": cfg.get("environment") or "sandbox",
             "include": "Y",
         })
     return tmp.name
@@ -451,7 +450,7 @@ def run_policy_report(cfg, out_dir):
 
 def build_parser():
     p = argparse.ArgumentParser(
-        prog="python aks_report.py sandbox",
+        prog="uv run python aks_report.py sandbox",
         description="Admin-only sandbox AKS deployment and Azure Policy test workflow.",
     )
     sub = p.add_subparsers(dest="command", required=True)

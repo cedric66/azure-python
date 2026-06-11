@@ -12,12 +12,12 @@ Outputs:
   reports/aks_spot_split_<cluster>_<ts>.xlsx   multi-tab design workbook
   reports/aks_spot_split_<cluster>_<ts>.md     design doc with Mermaid
         current/future diagrams - convert for hand-off with:
-        python aks_report.py convert <file>.md --to pdf
+        uv run python aks_report.py convert <file>.md --to pdf
 
 Usage:
-  python aks_report.py spot-design --cluster aks-kr-dev-01
-  python spot_split_design.py --cluster aks-kr-dev-01 --teams teams.csv
-  python spot_split_design.py --cluster aks-kr-dev-01 --spot-target 0.7 --od-floor 0.2
+  uv run python aks_report.py spot-design --cluster aks-kr-dev-01
+  uv run python spot_split_design.py --cluster aks-kr-dev-01 --teams teams.csv
+  uv run python spot_split_design.py --cluster aks-kr-dev-01 --spot-target 0.7 --od-floor 0.2
 """
 import csv
 import datetime as dt
@@ -291,9 +291,10 @@ def mermaid_doc(cl, mapping, plans, overrides, args, gen_ts):
         (" (per teams.csv criticality)" if overrides else ""),
         "3. **Expand** - remaining teams; set spot pool min-count to 0.",
         "4. **Shrink** - reduce each on-demand pool to its floor (commands in the "
-        "workbook), then track results with `aks_report.py spot-detail` and `cost`.",
+        "workbook), then track results with `uv run python aks_report.py spot-detail` "
+        "and `uv run python aks_report.py cost`.",
         "",
-        "Convert this document for hand-off: `python aks_report.py convert <this file> --to pdf`",
+        "Convert this document for hand-off: `uv run python aks_report.py convert <this file> --to pdf`",
     ]
     return "\n".join(lines)
 
@@ -420,8 +421,8 @@ def main(argv=None):
          "WorkloadChanges YAML to stateless deployments; observe eviction rate & pending pods 1-2 weeks"),
         (2, "Expand", "platform+BU", "create remaining spot pools; BUs migrate; keep od pools untouched"),
         (3, "Shrink", "platform", "reduce od pools to the floor (AzCommands order 2); set spot min-count 0"),
-        (4, "Steady state", "all", "review monthly with aks_report.py spot-detail / cost; tune "
-         "--od-floor down as confidence grows"),
+        (4, "Steady state", "all", "review monthly with `uv run python aks_report.py spot-detail` "
+         "and `uv run python aks_report.py cost`; tune --od-floor down as confidence grows"),
     ], columns=["phase", "name", "owner", "actions"])
 
     risks = pd.DataFrame([
@@ -501,7 +502,7 @@ def main(argv=None):
         md_path = os.path.splitext(path)[0] + ".md"
         with open(md_path, "w", encoding="utf-8") as f:
             f.write(md)
-        log("Design doc written: %s (convert: python aks_report.py convert %s --to pdf)"
+        log("Design doc written: %s (convert: uv run python aks_report.py convert %s --to pdf)"
             % (md_path, os.path.basename(md_path)))
     return path
 

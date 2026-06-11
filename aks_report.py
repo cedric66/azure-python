@@ -4,16 +4,17 @@ This script is the only command users need to remember. The report-specific
 scripts remain importable modules so the code stays small and maintainable.
 
 Examples:
-  python aks_report.py
-  python aks_report.py inventory --all
-  python aks_report.py cost --subs contoso-platform-dev --env dev
-  python aks_report.py deepdive --env dev --cluster aks-dev-01
-  python aks_report.py design --cluster aks-dev-01 --all
-  python aks_report.py network --nonprod
-  python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
-  python aks_report.py convert README.md --to all --config report_style.example.yaml
-  python aks_report.py sandbox plan sandbox.example.yaml
-  python aks_report.py list
+  uv run python aks_report.py
+  uv run python aks_report.py inventory --all
+  uv run python aks_report.py cost --subs contoso-platform --env dev
+  uv run python aks_report.py deepdive --env dev --cluster aks-dev-01
+  uv run python aks_report.py design --cluster aks-dev-01 --all
+  uv run python aks_report.py network --nonprod
+  uv run python aks_report.py spot-design --cluster aks-dev-01
+  uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
+  uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
+  uv run python aks_report.py sandbox plan sandbox.example.yaml
+  uv run python aks_report.py list
 """
 import importlib
 import sys
@@ -144,18 +145,18 @@ def print_help():
     print("  --subs <id-or-name>   --env dev   --nonprod   --cluster-prefix aks-d")
     print("  --cluster <name>      --cluster-contains payments")
     print("\nUse a report-specific help page like:")
-    print("  python aks_report.py cost --help")
+    print("  uv run python aks_report.py cost --help")
     print("\nDocument conversion:")
-    print("  python aks_report.py convert README.md --to docx")
-    print("  python aks_report.py convert README.md --to pdf --config report_style.example.yaml")
+    print("  uv run python aks_report.py convert README.md --to docx")
+    print("  uv run python aks_report.py convert README.md --to pdf --config report_style.example.yaml")
     print("\nSandbox admin workflow:")
-    print("  python aks_report.py sandbox plan sandbox.example.yaml")
-    print("  python aks_report.py sandbox deploy sandbox.example.yaml --yes --wait")
-    print("  python aks_report.py sandbox policy-apply sandbox.example.yaml --yes")
-    print("  python aks_report.py sandbox scan sandbox.example.yaml --yes")
+    print("  uv run python aks_report.py sandbox plan sandbox.example.yaml")
+    print("  uv run python aks_report.py sandbox deploy sandbox.example.yaml --yes --wait")
+    print("  uv run python aks_report.py sandbox policy-apply sandbox.example.yaml --yes")
+    print("  uv run python aks_report.py sandbox scan sandbox.example.yaml --yes")
     print("\nVulnerability workflow:")
-    print("  python aks_report.py vulnerabilities --cves cves.txt")
-    print("  python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json")
+    print("  uv run python aks_report.py vulnerabilities --cves cves.txt")
+    print("  uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json")
 
 
 def print_list():
@@ -176,7 +177,7 @@ def choose_report():
             return REPORTS[idx - 1]
     if raw in ALIASES:
         return ALIASES[raw]
-    sys.exit("Unknown report: %s. Run `python aks_report.py list`." % raw)
+    sys.exit("Unknown report: %s. Run `uv run python aks_report.py list`." % raw)
 
 
 def run_report(report, args):
@@ -206,7 +207,7 @@ def main(argv=None):
         token = argv.pop(0).lower()
         report = ALIASES.get(token)
         if not report:
-            sys.exit("Unknown report: %s. Run `python aks_report.py list`." % token)
+            sys.exit("Unknown report: %s. Run `uv run python aks_report.py list`." % token)
     else:
         report = choose_report()
 

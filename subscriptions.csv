@@ -1,5 +1,5 @@
-subscription_id,subscription_name,environment,include
-00000000-0000-0000-0000-000000000001,contoso-platform-dev,dev,Y
-00000000-0000-0000-0000-000000000002,contoso-platform-qa,qa,Y
-00000000-0000-0000-0000-000000000003,contoso-platform-prod,prod,Y
-00000000-0000-0000-0000-000000000004,contoso-data-prod,prod,N
+subscription_id,subscription_name,include
+00000000-0000-0000-0000-000000000001,contoso-platform,Y
+00000000-0000-0000-0000-000000000002,contoso-data,Y
+00000000-0000-0000-0000-000000000003,contoso-shared,Y
+00000000-0000-0000-0000-000000000004,contoso-legacy,N

@@ -1,5 +1,5 @@
 {
-  "_comment": "JSON equivalent of sandbox.example.yaml - copy to sandbox.json and edit. All write/delete commands: python aks_report.py sandbox <command> sandbox.json --yes. Policy definitions stay as plain JSON files under policies/.",
+  "_comment": "JSON equivalent of sandbox.example.yaml - copy to sandbox.json and edit. All write/delete commands: uv run python aks_report.py sandbox <command> sandbox.json --yes. Policy definitions stay as plain JSON files under policies/.",
   "subscription_id": "00000000-0000-0000-0000-000000000000",
   "subscription_name": "my-aks-sandbox",
   "environment": "sandbox",

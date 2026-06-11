@@ -3,7 +3,7 @@ name = "aks-reporting"
 version = "0.1.0"
 description = "AKS reporting toolkit for inventory, cost, policy, spot, design, and vulnerability workbooks."
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "azure-identity>=1.25.3,<2.0",
     "requests>=2.34.2,<3.0",

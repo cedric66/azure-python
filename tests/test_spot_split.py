@@ -1,7 +1,7 @@
 """Offline test for spot_split_design.py against a Korea-style fixture:
 one dev cluster with team-dedicated node pools (labels, taints, namespaces).
 
-  python tests/test_spot_split.py
+  uv run python tests/test_spot_split.py
 """
 import os
 import sys
@@ -92,7 +92,7 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
             data = [{"subscriptionId": S1, "name": "rg-kr-dev",
                      "tags": {"environment": "dev"}}]
         else:
-            data = [{"subscriptionId": S1, "name": "contoso-kr-dev"}]
+            data = [{"subscriptionId": S1, "name": "contoso-kr"}]
         return {"data": data, "$skipToken": None}
     raise AssertionError("Unmocked URL: %s %s" % (method, url))
 
@@ -133,8 +133,8 @@ def main():
     tmp = tempfile.mkdtemp(prefix="spotsplit_")
     csv_path = os.path.join(tmp, "subscriptions.csv")
     with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("subscription_id,subscription_name,environment,include\n")
-        f.write("%s,contoso-kr-dev,dev,Y\n" % S1)
+        f.write("subscription_id,subscription_name,include\n")
+        f.write("%s,contoso-kr,Y\n" % S1)
     teams_csv = os.path.join(tmp, "teams.csv")
     with open(teams_csv, "w", encoding="utf-8") as f:
         f.write("pool,team,namespaces,workload_type,criticality\n")

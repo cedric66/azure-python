@@ -1,6 +1,6 @@
 # AKS Reporting Toolkit document export style example.
 # Copy this file, edit values, and pass it with:
-#   python aks_report.py convert README.md --to all --config my_style.yaml
+#   uv run python aks_report.py convert README.md --to all --config my_style.yaml
 
 document:
   title: "AKS Reporting Toolkit"

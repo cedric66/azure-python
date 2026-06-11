@@ -1,6 +1,6 @@
 # Copy this file to sandbox.yaml and edit it for your Azure sandbox.
 # All write/delete operations require:
-#   python aks_report.py sandbox <command> sandbox.yaml --yes
+#   uv run python aks_report.py sandbox <command> sandbox.yaml --yes
 
 subscription_id: "00000000-0000-0000-0000-000000000000"
 subscription_name: "my-aks-sandbox"

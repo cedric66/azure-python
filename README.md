@@ -15,24 +15,25 @@ cluster); 429 throttling is handled automatically.
 
 Use this one script:
 
-```bat
-python aks_report.py
+```bash
+uv run python aks_report.py
 ```
 
 It opens a menu, then asks for subscription -> environment -> cluster scope.
 You can also skip the menu:
 
-```bat
-python aks_report.py inventory --all
-python aks_report.py cost --subs contoso-platform-dev --env dev
-python aks_report.py deepdive --env dev --cluster aks-dev-01
-python aks_report.py design --cluster aks-dev-01 --all
-python aks_report.py design --subs contoso-platform-dev --rg rg-apps-dev
-python aks_report.py network --nonprod
-python aks_report.py optimization --cluster-contains payments
-python aks_report.py convert README.md --to all --config report_style.example.yaml
-python aks_report.py sandbox plan sandbox.example.yaml
-python aks_report.py list
+```bash
+uv run python aks_report.py inventory --all
+uv run python aks_report.py cost --subs contoso-platform --env dev
+uv run python aks_report.py deepdive --env dev --cluster aks-dev-01
+uv run python aks_report.py design --cluster aks-dev-01 --all
+uv run python aks_report.py design --subs contoso-platform --rg rg-apps-dev
+uv run python aks_report.py network --nonprod
+uv run python aks_report.py optimization --cluster-contains payments
+uv run python aks_report.py spot-design --cluster aks-dev-01
+uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
+uv run python aks_report.py sandbox plan sandbox.example.yaml
+uv run python aks_report.py list
 ```
 
 The files below are the modules the launcher calls.
@@ -59,7 +60,7 @@ The files below are the modules the launcher calls.
 
 ## Setup (Local Linux)
 
-Requires Python 3.11+ and subscription-level Azure read access. Dependencies are
+Requires Python 3.12+ and subscription-level Azure read access. Dependencies are
 managed by `uv` from `pyproject.toml` and `uv.lock`.
 
 Install OS prerequisites, clone the repo, install `uv`, and sync the locked
@@ -75,14 +76,13 @@ cd azure-python
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 
-uv python install 3.11
+uv python install 3.12
 uv sync --frozen
 mkdir -p reports exports
 ```
 
-Configure `subscriptions.csv` with the subscriptions and environments to scan,
-then authenticate with one of the credential methods used by
-`DefaultAzureCredential`.
+Configure `subscriptions.csv` with the subscriptions to scan, then authenticate
+with one of the credential methods used by `DefaultAzureCredential`.
 
 Azure CLI login:
 
@@ -102,10 +102,10 @@ export AZURE_TENANT_ID="<tenant-id>"
 Run the launcher through `uv`:
 
 ```bash
-uv run --frozen python aks_report.py --help
-uv run --frozen python aks_report.py list
-uv run --frozen python aks_report.py inventory --all
-uv run --frozen python aks_report.py cost --env dev
+uv run python aks_report.py --help
+uv run python aks_report.py list
+uv run python aks_report.py inventory --all
+uv run python aks_report.py cost --env dev
 ```
 
 Common `uv` commands for this project:
@@ -113,8 +113,9 @@ Common `uv` commands for this project:
 ```bash
 uv sync --frozen                         # install exactly from uv.lock
 uv sync                                  # resync after pulling repo changes
-uv run --frozen python aks_report.py ... # run reports in the project env
-uv run --frozen python tests/smoke_test.py
+uv run python aks_report.py ...          # run reports in the project env
+uv run python tests/smoke_test.py        # run the offline smoke test
+uv run python tests/test_spot_split.py   # run the spot-design fixture test
 uv add <package>                         # add a runtime dependency
 uv lock                                  # refresh uv.lock after dependency edits
 uv tree                                  # inspect resolved dependencies
@@ -159,15 +160,15 @@ container, build a custom image that installs Azure CLI.
 
 ## Setup (Local Windows)
 
-```bat
-cd aks-reporting
-py -m pip install uv
+```powershell
+cd azure-python
+py -3.12 -m pip install uv
 uv sync
 az login
 uv run python aks_report.py --help
 ```
 
-Requires Python 3.11+. Dependencies are managed by `uv` through
+Requires Python 3.12+. Dependencies are managed by `uv` through
 `pyproject.toml` and `uv.lock`; local commands can be run as
 `uv run python aks_report.py ...`. Auth uses `DefaultAzureCredential`:
 `az login` works, as do service principal env vars (`AZURE_CLIENT_ID`,
@@ -219,12 +220,12 @@ The same file also contains `policies.definitions` and
 Typical lifecycle:
 
 ```bash
-python aks_report.py sandbox plan sandbox.yaml
-python aks_report.py sandbox deploy sandbox.yaml --yes --wait
-python aks_report.py sandbox policy-apply sandbox.yaml --yes
-python aks_report.py sandbox scan sandbox.yaml --yes
-python aks_report.py sandbox report sandbox.yaml
-python aks_report.py sandbox cleanup sandbox.yaml --yes
+uv run python aks_report.py sandbox plan sandbox.yaml
+uv run python aks_report.py sandbox deploy sandbox.yaml --yes --wait
+uv run python aks_report.py sandbox policy-apply sandbox.yaml --yes
+uv run python aks_report.py sandbox scan sandbox.yaml --yes
+uv run python aks_report.py sandbox report sandbox.yaml
+uv run python aks_report.py sandbox cleanup sandbox.yaml --yes
 ```
 
 Write/delete commands require `--yes`. They also refuse to run unless the
@@ -244,7 +245,7 @@ Recommended policy flow:
 The estate-wide read-only report remains:
 
 ```bash
-python aks_report.py policy --all
+uv run python aks_report.py policy --all
 ```
 
 That report will show policy assignments and compliance across all included
@@ -256,13 +257,14 @@ been assigned outside the sandbox.
 `subscriptions.csv` (edit the included template):
 
 ```csv
-subscription_id,subscription_name,environment,include
-00000000-...,contoso-platform-dev,dev,Y
-00000000-...,contoso-platform-prod,prod,N
+subscription_id,subscription_name,include
+00000000-...,contoso-platform,Y
+00000000-...,contoso-data,N
 ```
 
-- `environment` is the fallback when a cluster has no environment tag.
 - `include=N` rows are ignored without deleting them from the file.
+- A subscription can contain clusters from many environments. Environments are
+  resolved per cluster from AKS tags, resource-group tags, or name inference.
 
 ## Choosing Scope
 
@@ -287,16 +289,16 @@ Scope step 3/3 - cluster        [Enter = all clusters]
 
 Or skip the prompt with flags:
 
-```bat
-python aks_report.py inventory --all
-python aks_report.py inventory --subs 00000000-0000-0000-0000-000000000001
-python aks_report.py inventory --subs contoso-platform-dev --env dev
-python aks_report.py inventory --env sit
-python aks_report.py inventory --nonprod
-python aks_report.py inventory --env dr --cluster-prefix aks-r
-python aks_report.py inventory --cluster aks-dev-01
-python aks_report.py inventory --cluster-prefix aks-d
-python aks_report.py inventory --cluster-contains payments
+```bash
+uv run python aks_report.py inventory --all
+uv run python aks_report.py inventory --subs 00000000-0000-0000-0000-000000000001
+uv run python aks_report.py inventory --subs contoso-platform --env dev
+uv run python aks_report.py inventory --env sit
+uv run python aks_report.py inventory --nonprod
+uv run python aks_report.py inventory --env dr --cluster-prefix aks-r
+uv run python aks_report.py inventory --cluster aks-dev-01
+uv run python aks_report.py inventory --cluster-prefix aks-d
+uv run python aks_report.py inventory --cluster-contains payments
 ```
 
 Fleet-level reports treat a blank cluster filter as all clusters. `deepdive`
@@ -304,10 +306,12 @@ is the exception because it makes several Cost Management queries per cluster; i
 you do not pass `--cluster`/`--cluster-id`, it asks which single cluster to
 analyze after subscription and environment narrowing.
 
-A cluster's environment = cluster tags -> resource group tags -> name inference -> CSV value
+A cluster's environment = cluster tags -> resource group tags -> name inference
 (tag keys checked: `environment`, `env`, `stage`; override with
-`--env-tag-keys`). If no tag is present, the scripts infer from cluster/resource
-group/subscription names before using the CSV fallback.
+`--env-tag-keys`). If no tag is present, the scripts infer from cluster,
+resource-group, or AKS node resource-group names. Subscription names are not
+used for environment inference because one subscription can contain many
+environments.
 
 Default name inference examples:
 
@@ -321,14 +325,14 @@ Default name inference examples:
 
 Override short-code mapping if your naming is different:
 
-```bat
-python aks_report.py inventory --env-code-map d=dev,s=sit,r=dr,p=prod,t=tr
+```bash
+uv run python aks_report.py inventory --env-code-map d=dev,s=sit,r=dr,p=prod,t=tr
 ```
 
 Disable name inference entirely:
 
-```bat
-python aks_report.py inventory --no-name-env
+```bash
+uv run python aks_report.py inventory --no-name-env
 ```
 
 Unknown-env clusters are **excluded** from `--nonprod` by default (safer); add
@@ -336,35 +340,36 @@ Unknown-env clusters are **excluded** from `--nonprod` by default (safer); add
 `prod,production,prd,live` as production by default. If DR should be excluded
 from non-prod in your estate, run:
 
-```bat
-python aks_report.py cost --nonprod --prod-values prod,production,prd,live,dr
+```bash
+uv run python aks_report.py cost --nonprod --prod-values prod,production,prd,live,dr
 ```
 
 ## Usage examples
 
-```bat
-python aks_report.py inventory --all
-python aks_report.py deepdive --env dev              :: interactive cluster picker
-python aks_report.py deepdive --cluster my-aks --all
-python aks_report.py design --cluster my-aks --all
-python aks_report.py design --subs contoso-platform-dev --rg rg-apps-dev
-python aks_report.py design --subs contoso-platform-dev --all
-python aks_report.py cost --nonprod
-python aks_report.py cost --subs contoso-platform-dev --env dev
-python aks_report.py cost --env sit --cluster-prefix aks-s
-python aks_report.py cost --all --actual --granularity Daily
-python aks_report.py version --all
-python aks_report.py spot --nonprod
-python aks_report.py spot-detail --subs contoso-platform-dev --env dev
-python aks_report.py spot-detail --subs contoso-platform-dev --only-spot-clusters
-python aks_report.py utilization --env dev --days 14
-python aks_report.py governance --all
-python aks_report.py policy --all
-python aks_report.py network --all
-python aks_report.py tags --all --required-tags environment,owner,costcenter,application
-python aks_report.py optimization --nonprod --days 14
-python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
-python aks_report.py vulnerabilities --cves cves.txt --offline
+```bash
+uv run python aks_report.py inventory --all
+uv run python aks_report.py deepdive --env dev              # interactive cluster picker
+uv run python aks_report.py deepdive --cluster my-aks --all
+uv run python aks_report.py design --cluster my-aks --all
+uv run python aks_report.py design --subs contoso-platform --rg rg-apps-dev
+uv run python aks_report.py design --subs contoso-platform --all
+uv run python aks_report.py cost --nonprod
+uv run python aks_report.py cost --subs contoso-platform --env dev
+uv run python aks_report.py cost --env sit --cluster-prefix aks-s
+uv run python aks_report.py cost --all --actual --granularity Daily
+uv run python aks_report.py version --all
+uv run python aks_report.py spot --nonprod
+uv run python aks_report.py spot-detail --subs contoso-platform --env dev
+uv run python aks_report.py spot-detail --subs contoso-platform --only-spot-clusters
+uv run python aks_report.py spot-design --cluster aks-dev-01
+uv run python aks_report.py utilization --env dev --days 14
+uv run python aks_report.py governance --all
+uv run python aks_report.py policy --all
+uv run python aks_report.py network --all
+uv run python aks_report.py tags --all --required-tags environment,owner,costcenter,application
+uv run python aks_report.py optimization --nonprod --days 14
+uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
+uv run python aks_report.py vulnerabilities --cves cves.txt --offline
 ```
 
 ## CVE / Prisma Vulnerability Report
@@ -374,9 +379,9 @@ format or a simple CVE list and want an Excel workbook that separates likely
 base-image, application dependency, and platform/runtime-framework ownership.
 
 ```bash
-python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
-python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules classification-rules/ --offline
-python aks_report.py vulnerabilities --cves cves.txt
+uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
+uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules classification-rules/ --offline
+uv run python aks_report.py vulnerabilities --cves cves.txt
 ```
 
 Inputs:
@@ -426,16 +431,16 @@ Example rule:
 The launcher can also convert Markdown documentation to DOCX and PDF:
 
 ```bash
-python aks_report.py convert README.md --to docx
-python aks_report.py convert README.md --to pdf
-python aks_report.py convert README.md --to all --config report_style.example.yaml
+uv run python aks_report.py convert README.md --to docx
+uv run python aks_report.py convert README.md --to pdf
+uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
 ```
 
 The style is configurable through a YAML file. Start with:
 
 ```bash
 cp report_style.example.yaml my_report_style.yaml
-python aks_report.py convert README.md --to all --config my_report_style.yaml
+uv run python aks_report.py convert README.md --to all --config my_report_style.yaml
 ```
 
 Configurable items include page size, margins, body/heading/code fonts, heading
@@ -459,9 +464,9 @@ Use `spot` when you want opportunity/savings screening. Use `spot-detail` when
 you want a detailed current-state review of spot clusters and pool configuration:
 
 ```bash
-python aks_report.py spot-detail --subs contoso-platform-dev --env dev
-python aks_report.py spot-detail --subs contoso-platform-dev --only-spot-clusters
-python aks_report.py spot-detail --nonprod --cluster-prefix aks-d
+uv run python aks_report.py spot-detail --subs contoso-platform --env dev
+uv run python aks_report.py spot-detail --subs contoso-platform --only-spot-clusters
+uv run python aks_report.py spot-detail --nonprod --cluster-prefix aks-d
 ```
 
 Workbook tabs include:
@@ -492,10 +497,10 @@ The design report creates a workbook and, unless `--no-doc` is supplied, a
 Markdown companion file with Mermaid diagrams:
 
 ```bash
-python aks_report.py design --cluster aks-dev-01 --all
-python aks_report.py design --env dev
-python aks_report.py design --subs contoso-platform-dev --rg rg-apps-dev
-python aks_report.py design --subs contoso-platform-dev --all --no-doc
+uv run python aks_report.py design --cluster aks-dev-01 --all
+uv run python aks_report.py design --env dev
+uv run python aks_report.py design --subs contoso-platform --rg rg-apps-dev
+uv run python aks_report.py design --subs contoso-platform --all --no-doc
 ```
 
 Scope behavior:
@@ -517,7 +522,7 @@ kubectl access.
 ## Dependency Baseline
 
 `pyproject.toml` is the dependency source and `uv.lock` pins the resolved
-environment for repeatable local and Docker runs on Python 3.11+:
+environment for repeatable local and Docker runs on Python 3.12+:
 
 | Package | Why it is used |
 |---|---|
@@ -563,15 +568,17 @@ environment for repeatable local and Docker runs on Python 3.11+:
 ## Testing without Azure
 
 ```bash
-uv run --frozen python tests/smoke_test.py
-uv run --frozen python tests/test_vulnerability_report.py
+uv run python tests/smoke_test.py
+uv run python tests/test_spot_split.py
+uv run python tests/test_vulnerability_report.py
 ```
 
-Runs the launcher and all fifteen report modules end-to-end against mocked Azure
-responses plus a focused Prisma XLSX/JSON-rules vulnerability test. The tests
-validate generated workbooks, including sheet presence, SKU-change detection,
-EOL flags, governance failures, policy blind spots, subnet capacity, tag gaps,
-optimization candidates, vulnerability classification, and sandbox planning.
+Runs the launcher and report modules end-to-end against mocked Azure responses,
+plus focused spot-design and Prisma XLSX/JSON-rules vulnerability tests. The
+tests validate generated workbooks, including sheet presence, SKU-change
+detection, EOL flags, governance failures, policy blind spots, subnet capacity,
+tag gaps, optimization candidates, spot split design, vulnerability
+classification, and sandbox planning.
 
 ## Troubleshooting
 
@@ -595,8 +602,8 @@ Common fields used across reports:
 |---|---|
 | `cluster` | AKS managed cluster name. |
 | `subscription` / `subscription_id` | Friendly subscription name from `subscriptions.csv` or Azure, plus the GUID where shown. |
-| `environment` | Resolved environment from cluster tag, resource-group tag, name inference, or CSV fallback. |
-| `environment_source` | Where the environment came from, for example `cluster_tag:environment`, `resource_group_tag:env`, `name`, or `csv`. |
+| `environment` | Resolved environment from cluster tag, resource-group tag, or name inference. |
+| `environment_source` | Where the environment came from, for example `cluster_tag:environment`, `resource_group_tag:env`, or `name`. |
 | `location` | Azure region of the cluster or network resource. |
 | `resource_group` | Resource group that owns the AKS managed-cluster resource. |
 | `node_resource_group` | AKS-managed `MC_*` resource group where VMSS/node resources live. |
@@ -611,7 +618,7 @@ Common fields used across reports:
 
 ### Architecture Design Report
 
-Command: `python aks_report.py design --cluster aks-dev-01 --all`
+Command: `uv run python aks_report.py design --cluster aks-dev-01 --all`
 
 Sheets created: `DesignSummary`, `Clusters`, `NodePools`, `Network`,
 `Subnets`, `Resources`, `ResourceCounts`, `Components`, `Diagrams`.
@@ -619,33 +626,33 @@ Sheets created: `DesignSummary`, `Clusters`, `NodePools`, `Network`,
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
 | `DesignSummary` | `Item, Value` | `Azure resources in design scope, 18` | High-level counts for selected subscriptions, clusters, node pools, resources, and generated document mode. |
-| `Clusters` | `cluster, subscription, environment, location, resource_group, node_resource_group, kubernetes_version, sku_tier, node_pools, total_nodes, identity_type, addon_azure_policy, private_cluster` | `aks-dev-01, contoso-dev, dev, eastus, rg-apps-dev, MC_rg-apps-dev_aks-dev-01_eastus, 1.29.4, Free, 3, 7, SystemAssigned, false, false` | Cluster-level design facts for the selected scope. |
+| `Clusters` | `cluster, subscription, environment, location, resource_group, node_resource_group, kubernetes_version, sku_tier, node_pools, total_nodes, identity_type, addon_azure_policy, private_cluster` | `aks-dev-01, contoso-platform, dev, eastus, rg-apps-dev, MC_rg-apps-dev_aks-dev-01_eastus, 1.29.4, Free, 3, 7, SystemAssigned, false, false` | Cluster-level design facts for the selected scope. |
 | `NodePools` | `cluster, pool, mode, vm_size, priority, count, autoscaling, min_count, max_count, zones, vnet_subnet_id, pod_subnet_id` | `aks-dev-01, sys, System, Standard_D4s_v3, Regular, 2, false, blank, blank, blank, <subnetId>, blank` | Compute shape and subnet mapping for each node pool. |
 | `Network` | `cluster, network_plugin, network_plugin_mode, network_policy, outbound_type, load_balancer_sku, private_cluster, authorized_ip_ranges, public_fqdn, private_fqdn` | `aks-dev-01, kubenet, blank, blank, loadBalancer, standard, false, 0, aksdev01.hcp.eastus.azmk8s.io, blank` | Network and API-server design state visible from ARM. |
-| `Subnets` | `subnet_id, subscription, resource_group, vnet, subnet, prefixes, referenced_by_aks, nsg_id, route_table_id, nat_gateway_id` | `<subnetId>, contoso-dev, rg-network, vnet-dev, aks-dev-nodes, 10.10.1.0/28, true, <nsgId>, blank, blank` | Referenced AKS subnets plus network controls. |
-| `Resources` | `subscription, resourceGroup, name, type, component_class, location, sku_name, sku_tier, provisioning_state, id` | `contoso-dev, MC_rg-apps-dev_aks-dev-01_eastus, kubernetes, microsoft.network/loadbalancers, Load balancer, eastus, standard, blank, Succeeded, <resourceId>` | Azure resources in the design scope. |
-| `ResourceCounts` | `subscription, resourceGroup, component_class, type, count` | `contoso-dev, MC_rg-apps-dev_aks-dev-01_eastus, Load balancer, microsoft.network/loadbalancers, 1` | Resource-type rollup by resource group. |
+| `Subnets` | `subnet_id, subscription, resource_group, vnet, subnet, prefixes, referenced_by_aks, nsg_id, route_table_id, nat_gateway_id` | `<subnetId>, contoso-platform, rg-network, vnet-dev, aks-dev-nodes, 10.10.1.0/28, true, <nsgId>, blank, blank` | Referenced AKS subnets plus network controls. |
+| `Resources` | `subscription, resourceGroup, name, type, component_class, location, sku_name, sku_tier, provisioning_state, id` | `contoso-platform, MC_rg-apps-dev_aks-dev-01_eastus, kubernetes, microsoft.network/loadbalancers, Load balancer, eastus, standard, blank, Succeeded, <resourceId>` | Azure resources in the design scope. |
+| `ResourceCounts` | `subscription, resourceGroup, component_class, type, count` | `contoso-platform, MC_rg-apps-dev_aks-dev-01_eastus, Load balancer, microsoft.network/loadbalancers, 1` | Resource-type rollup by resource group. |
 | `Components` | `cluster, component, name, resource_group, type, sku_or_size, state, details` | `aks-dev-01, Node pool, sys, MC_rg-apps-dev_aks-dev-01_eastus, System, Standard_D4s_v3, Running, nodes=2; autoscaling=false` | Human-readable design components that connect cluster, pools, API, addons, and nearby Azure resources. |
 | `Diagrams` | `cluster, diagram` | `aks-dev-01, flowchart LR ...` | Mermaid diagram source used in the Markdown design document. |
 
 ### Inventory Report
 
-Command: `python aks_report.py inventory --all`
+Command: `uv run python aks_report.py inventory --all`
 
 Sheets created: `Clusters`, `NodePools`, `NetworkSecurity`, `Addons`, `Tags`,
 `Summary`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `Clusters` | `cluster, subscription, environment, location, kubernetes_version, sku_tier, node_pools, total_nodes, vm_sizes, private_cluster` | `aks-dev-01, contoso-dev, dev, eastus, 1.29.4, Free, 3, 7, Standard_D4as_v4; Standard_D4s_v3, false` | High-level AKS inventory: version, tier, node-pool count, total node count, VM families, and whether the API server is private. |
+| `Clusters` | `cluster, subscription, environment, location, kubernetes_version, sku_tier, node_pools, total_nodes, vm_sizes, private_cluster` | `aks-dev-01, contoso-platform, dev, eastus, 1.29.4, Free, 3, 7, Standard_D4as_v4; Standard_D4s_v3, false` | High-level AKS inventory: version, tier, node-pool count, total node count, VM families, and whether the API server is private. |
 | `NodePools` | `cluster, pool, mode, vm_size, priority, count, autoscaling, min_count, max_count, os_sku, zones` | `aks-dev-01, sys, System, Standard_D4s_v3, Regular, 2, false, blank, blank, Ubuntu, blank` | Per-pool compute settings including autoscaler bounds, OS, zones, and spot usage. |
 | `NetworkSecurity` | `cluster, network_plugin, network_policy, outbound_type, private_cluster, authorized_ip_ranges, rbac_enabled, aad_managed, local_accounts_disabled` | `aks-dev-01, kubenet, blank, loadBalancer, false, 0, true, false, false` | API exposure, network model, and identity/security settings visible from ARM. |
 | `Addons` | `cluster, addon_monitoring, addon_azure_policy, addon_keyvault_csi, addon_appgw_ingress, addon_virtual_node` | `aks-dev-01, false, false, false, false, false` | Whether common AKS addons are enabled. |
-| `Tags` | `cluster, subscription, tag, value` | `aks-dev-01, contoso-dev, environment, dev` | Raw cluster tags used for ownership, environment, and chargeback. |
+| `Tags` | `cluster, subscription, tag, value` | `aks-dev-01, contoso-platform, environment, dev` | Raw cluster tags used for ownership, environment, and chargeback. |
 
 ### Cluster Deep Dive Report
 
-Command: `python aks_report.py deepdive --cluster aks-dev-01 --all`
+Command: `uv run python aks_report.py deepdive --cluster aks-dev-01 --all`
 
 Sheets created: `Summary`, `DailyCost`, `CostByMeter`, `CostByNodePool`,
 `AmortizedVsActual`, `SKUChanges`, `NodePools`, `Utilization`, `ActivityLog`.
@@ -662,47 +669,47 @@ Sheets created: `Summary`, `DailyCost`, `CostByMeter`, `CostByNodePool`,
 
 ### Fleet Cost Report
 
-Command: `python aks_report.py cost --all`
+Command: `uv run python aks_report.py cost --all`
 
 Sheets created: `ClusterCosts`, `PricingModelSplit`, `TopMovers`,
 `MeterChanges`, `BySubscription`, `RawMonthly`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `ClusterCosts` | `cluster, subscription, environment, location, 2026-03, 2026-04, 2026-05, 2026-06, Window total (USD), MoM %, Spot (USD), RI+SP (USD), Spot %, Cluster fee (USD), Amortized-Actual (USD)` | `aks-prod-01, contoso-prod, prod, westeurope, 1030, 1051, 1533, 477, formula, formula, 105, 666, formula, 243, 666` | Per-cluster monthly trend, total, month-over-month change, spot spend, reservation/savings-plan allocation, managed-cluster fee, and amortized-vs-actual delta. |
-| `PricingModelSplit` | `cluster, subscription, environment, OnDemand, Spot, Reservation, Total (USD), Spot %` | `aks-dev-01, contoso-dev, dev, 1014, 141, 200, formula, formula` | Shows whether spend is regular, spot, or covered by commitments. |
-| `TopMovers` | `cluster, subscription, environment, previous_month, last_full_month, Delta (USD), Delta %` | `aks-prod-01, contoso-prod, prod, 1051, 1533, formula, formula` | Clusters with the biggest month-over-month cost movement. |
+| `ClusterCosts` | `cluster, subscription, environment, location, 2026-03, 2026-04, 2026-05, 2026-06, Window total (USD), MoM %, Spot (USD), RI+SP (USD), Spot %, Cluster fee (USD), Amortized-Actual (USD)` | `aks-prod-01, contoso-shared, prod, westeurope, 1030, 1051, 1533, 477, formula, formula, 105, 666, formula, 243, 666` | Per-cluster monthly trend, total, month-over-month change, spot spend, reservation/savings-plan allocation, managed-cluster fee, and amortized-vs-actual delta. |
+| `PricingModelSplit` | `cluster, subscription, environment, OnDemand, Spot, Reservation, Total (USD), Spot %` | `aks-dev-01, contoso-platform, dev, 1014, 141, 200, formula, formula` | Shows whether spend is regular, spot, or covered by commitments. |
+| `TopMovers` | `cluster, subscription, environment, previous_month, last_full_month, Delta (USD), Delta %` | `aks-prod-01, contoso-shared, prod, 1051, 1533, formula, formula` | Clusters with the biggest month-over-month cost movement. |
 | `MeterChanges` | `cluster, meter, status, first_active_month, last_active_month, first_usd, last_usd` | `aks-dev-01, D2s v3, REMOVED, 2026-03, 2026-03, 100, 100` | Detects SKU/meter changes across the fleet. |
-| `RawMonthly` | `cluster, subscription, environment, Month, PricingModel, Amortized (USD)` | `aks-dev-01, contoso-dev, dev, 2026-03, OnDemand, 325` | Raw monthly cost rows used to build the summary tabs. |
+| `RawMonthly` | `cluster, subscription, environment, Month, PricingModel, Amortized (USD)` | `aks-dev-01, contoso-platform, dev, 2026-03, OnDemand, 325` | Raw monthly cost rows used to build the summary tabs. |
 
 ### Version And EOL Report
 
-Command: `python aks_report.py version --all`
+Command: `uv run python aks_report.py version --all`
 
 Sheets created: `VersionStatus`, `NodeImageAge`, `SupportedVersions`,
 `Summary`, `SummaryByEnv`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `VersionStatus` | `cluster, subscription, environment, location, control_plane_version, minor, status, upgrade_channel, node_os_channel, pool_version_drift, note, power_state, sku_tier` | `aks-dev-01, contoso-dev, dev, eastus, 1.29.4, 1.29, OUT OF SUPPORT, (none), (none), blank, minor 1.29 is not in the supported list for eastus, Running, Free` | Control-plane support status against AKS-supported versions in that region. |
-| `NodeImageAge` | `cluster, subscription, environment, pool, node_image_version, image_date, age_days, status` | `aks-dev-01, contoso-dev, dev, sys, AKSUbuntu-2204..., 2026-01-07, 154, STALE` | Node image freshness by pool. |
+| `VersionStatus` | `cluster, subscription, environment, location, control_plane_version, minor, status, upgrade_channel, node_os_channel, pool_version_drift, note, power_state, sku_tier` | `aks-dev-01, contoso-platform, dev, eastus, 1.29.4, 1.29, OUT OF SUPPORT, (none), (none), blank, minor 1.29 is not in the supported list for eastus, Running, Free` | Control-plane support status against AKS-supported versions in that region. |
+| `NodeImageAge` | `cluster, subscription, environment, pool, node_image_version, image_date, age_days, status` | `aks-dev-01, contoso-platform, dev, sys, AKSUbuntu-2204..., 2026-01-07, 154, STALE` | Node image freshness by pool. |
 | `SupportedVersions` | `region, minor, support_plans, is_preview, is_default, patches` | `eastus, 1.30, AKSLongTermSupport, false, false, 1.30.9` | Region-specific AKS versions returned by Azure. |
 
 ### Spot Opportunity Report
 
-Command: `python aks_report.py spot --nonprod`
+Command: `uv run python aks_report.py spot --nonprod`
 
 Sheets created: `SpotToday`, `Candidates`, `PriceReference`, `Summary`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `SpotToday` | `cluster, subscription, environment, location, pool, vm_size, nodes, spot_max_price, eviction_policy, autoscaling, min_count, max_count` | `aks-dev-01, contoso-dev, dev, eastus, spt, Standard_D4as_v4, 2, -1, Delete, false, blank, blank` | Existing spot pools and their eviction/autoscaler settings. |
-| `Candidates` | `cluster, subscription, environment, location, pool, vm_size, nodes, autoscaling, taints, od_hr, spot_hr, Spot discount %, Est monthly OD cost, Est monthly saving` | `aks-dev-01, contoso-dev, dev, eastus, wrk, Standard_D4s_v3, 3, true, blank, 0.192, 0.041, formula, formula, formula` | Non-prod regular pools that may be spot candidates, with retail-price savings estimates. |
+| `SpotToday` | `cluster, subscription, environment, location, pool, vm_size, nodes, spot_max_price, eviction_policy, autoscaling, min_count, max_count` | `aks-dev-01, contoso-platform, dev, eastus, spt, Standard_D4as_v4, 2, -1, Delete, false, blank, blank` | Existing spot pools and their eviction/autoscaler settings. |
+| `Candidates` | `cluster, subscription, environment, location, pool, vm_size, nodes, autoscaling, taints, od_hr, spot_hr, Spot discount %, Est monthly OD cost, Est monthly saving` | `aks-dev-01, contoso-platform, dev, eastus, wrk, Standard_D4s_v3, 3, true, blank, 0.192, 0.041, formula, formula, formula` | Non-prod regular pools that may be spot candidates, with retail-price savings estimates. |
 | `PriceReference` | `region, vm_size, od_hr, spot_hr, discount %` | `eastus, Standard_D4as_v4, 0.192, 0.041, formula` | Retail hourly prices used by the candidate estimate. |
 
 ### Spot Detail Report
 
-Command: `python aks_report.py spot-detail --subs contoso-platform-dev --env dev`
+Command: `uv run python aks_report.py spot-detail --subs contoso-platform --env dev`
 
 Sheets created: `ClusterSpotSummary`, `SpotNodePools`, `OnDemandNodePools`,
 `NodePoolSkuSummary`, `AutoscalerConfig`, `SpotAssessment`, `CostByCluster`,
@@ -711,103 +718,119 @@ Sheets created: `ClusterSpotSummary`, `SpotNodePools`, `OnDemandNodePools`,
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `ClusterSpotSummary` | `cluster, subscription, environment, has_spot, spot_pools, spot_nodes, on_demand_pools, on_demand_nodes, system_on_demand, spot_vm_sizes, on_demand_vm_sizes, spot_multi_zone, spot_multi_vm_family, spot_max_nodes, cluster_max_nodes, autoscaler_expander, OnDemand, Spot, Reservation, SavingsPlan, Cluster fee, Total (USD), Spot %` | `aks-dev-01, contoso-dev, dev, true, 1, 2, 2, 5, true, Standard_D4as_v4, Standard_D4s_v3, true, false, 2, 12, priority, 1014, 141, 200, 0, 0, 1355, 10.4%` | One-row cluster view of spot/on-demand shape, capacity caps, autoscaler signal, and cost split. |
+| `ClusterSpotSummary` | `cluster, subscription, environment, has_spot, spot_pools, spot_nodes, on_demand_pools, on_demand_nodes, system_on_demand, spot_vm_sizes, on_demand_vm_sizes, spot_multi_zone, spot_multi_vm_family, spot_max_nodes, cluster_max_nodes, autoscaler_expander, OnDemand, Spot, Reservation, SavingsPlan, Cluster fee, Total (USD), Spot %` | `aks-dev-01, contoso-platform, dev, true, 1, 2, 2, 5, true, Standard_D4as_v4, Standard_D4s_v3, true, false, 2, 12, priority, 1014, 141, 200, 0, 0, 1355, 10.4%` | One-row cluster view of spot/on-demand shape, capacity caps, autoscaler signal, and cost split. |
 | `SpotNodePools` | `cluster, pool, mode, priority, vm_size, vm_family, nodes, autoscaling, min_count, max_count, effective_min_nodes, effective_max_nodes, zones, zones_count, eviction_policy, spot_max_price, spot_price_mode, taints, spot_taint_present, expected_spot_taint` | `aks-dev-01, spt, User, Spot, Standard_D4as_v4, d, 2, false, blank, blank, 2, 2, blank, 0, Delete, -1, pay_up_to_on_demand, kubernetes.azure.com/scalesetpriority=spot:NoSchedule, true, kubernetes.azure.com/scalesetpriority=spot:NoSchedule` | Every spot pool with SKU, mode, node count, autoscaling bounds, zones, eviction policy, price cap, and taint visibility. |
 | `OnDemandNodePools` | `cluster, pool, mode, priority, vm_size, nodes, autoscaling, min_count, max_count, effective_max_nodes, zones_count, os_sku, power_state` | `aks-dev-01, sys, System, Regular, Standard_D4s_v3, 2, false, blank, blank, 2, 0, Ubuntu, Running` | Regular pools that provide system and fallback capacity. |
 | `NodePoolSkuSummary` | `cluster, priority, mode, vm_size, vm_family, node_pools, current_nodes, effective_min_nodes, effective_max_nodes, zones_count_max, pools` | `aks-dev-01, Spot, User, Standard_D4as_v4, d, 1, 2, 2, 2, 0, spt` | Capacity by SKU/family, priority, and pool mode. |
 | `AutoscalerConfig` | `cluster, spot_pools, autoscaling_pools, expander, balance_similar_node_groups, scan_interval, scale_down_unneeded_time, autoscaled_spot_pools, cluster_max_nodes, spot_max_nodes, on_demand_max_nodes` | `aks-dev-01, 1, 1, priority, true, 10s, 10m, 0, 12, 2, 10` | Cluster autoscaler profile and effective max capacity split by spot/on-demand. |
-| `SpotAssessment` | `cluster, subscription, environment, severity, check, result, evidence, recommendation` | `aks-dev-01, contoso-dev, dev, WARN, spot_multi_vm_family, WARN, spot VM families=d, Use multiple VM families/SKUs to reduce spot capacity concentration.` | Independent review findings for prod spot, system fallback, zones, VM families, caps, autoscaling, taints, and autoscaler settings. |
-| `CostByCluster` | `cluster, subscription, environment, OnDemand, Spot, Reservation, SavingsPlan, Cluster fee, Total (USD), Spot %` | `aks-dev-01, contoso-dev, dev, 1014, 141, 200, 0, 0, 1355, 10.4%` | Window-level amortized cost split by pricing model plus managed-cluster fee. |
-| `CostTrend` | `cluster, subscription, environment, Month, OnDemand, Spot, Reservation, SavingsPlan, Cluster fee, Total (USD), Spot %` | `aks-dev-01, contoso-dev, dev, 2026-03, 325, 40, 60, 0, 0, 425, 9.4%` | Monthly trend for spot/on-demand/RI/SP cost. |
+| `SpotAssessment` | `cluster, subscription, environment, severity, check, result, evidence, recommendation` | `aks-dev-01, contoso-platform, dev, WARN, spot_multi_vm_family, WARN, spot VM families=d, Use multiple VM families/SKUs to reduce spot capacity concentration.` | Independent review findings for prod spot, system fallback, zones, VM families, caps, autoscaling, taints, and autoscaler settings. |
+| `CostByCluster` | `cluster, subscription, environment, OnDemand, Spot, Reservation, SavingsPlan, Cluster fee, Total (USD), Spot %` | `aks-dev-01, contoso-platform, dev, 1014, 141, 200, 0, 0, 1355, 10.4%` | Window-level amortized cost split by pricing model plus managed-cluster fee. |
+| `CostTrend` | `cluster, subscription, environment, Month, OnDemand, Spot, Reservation, SavingsPlan, Cluster fee, Total (USD), Spot %` | `aks-dev-01, contoso-platform, dev, 2026-03, 325, 40, 60, 0, 0, 425, 9.4%` | Monthly trend for spot/on-demand/RI/SP cost. |
 | `CostByNodePool` | `cluster, pool, priority, mode, vm_size, nodes, autoscaling, effective_max_nodes, window_cost, months, resource_count` | `aks-dev-01, spt, Spot, User, Standard_D4as_v4, 2, false, 2, 141, 2026-03; 2026-04; 2026-05; 2026-06, 1` | Cost inferred from VMSS resource IDs and joined back to node-pool config. |
 | `OtherCostItems` | `cluster, category, resource_name, resource_id, window_cost, months` | `aks-dev-01, managed_disks, agentdisks, <diskId>, 84, 2026-03; 2026-04; 2026-05; 2026-06` | Non-node-pool costs in the node resource group plus managed-cluster fee. |
 | `CostByMeter` | `cluster, meter, window_cost, months` | `aks-dev-01, Standard HDD Managed Disks, 84, 2026-03; 2026-04; 2026-05; 2026-06` | Meter-level cost used to spot disk/LB/IP or SKU-related spend. |
 
+### Spot Split Design Report
+
+Command: `uv run python aks_report.py spot-design --cluster aks-dev-01`
+
+Sheets created: `CurrentState`, `TeamMapping`, `FutureStatePools`,
+`AzCommands`, `WorkloadChanges`, `Savings`, `NotSplit`, `ClusterPrereqs`,
+`SpotAssessment`, `RolloutPlan`, `Risks`.
+
+| Sheet | Sample headers | Example row | Field meaning |
+|---|---|---|---|
+| `CurrentState` | `pool, mode, priority, vm_size, current_nodes, max_count, team, labels, taints` | `paypool, User, Regular, Standard_D8s_v3, 4, 6, payments, team=payments, dedicated=payments:NoSchedule` | Current team-dedicated pool shape inferred from ARM node labels, taints, names, and optional `teams.csv`. |
+| `FutureStatePools` | `team, od_pool, spot_pool, vm_size, current_nodes, od_keep_nodes, spot_initial_nodes, spot_max` | `payments, paypool, paypoolsp, Standard_D8s_v3, 4, 1, 3, 6` | Proposed on-demand floor and paired spot pool sizing. |
+| `AzCommands` | `order, phase, team, pool, command` | `1, pilot/expand, payments, paypoolsp, az aks nodepool add ... --priority Spot` | Platform-team commands to add spot pools and later shrink on-demand pools. |
+| `WorkloadChanges` | `team, applies_to, yaml` | `payments, deployments moving to spot, tolerations/affinity/spread/PDB YAML` | BU-owned Kubernetes changes needed to prefer spot safely. |
+| `Savings` | `team, vm_size, nodes_moved, od_hr, spot_hr, discount %, est monthly saving (USD)` | `payments, Standard_D8s_v3, 3, 0.48, 0.10, 79%, 832` | Public retail-price estimate for screening the split design. |
+
 ### Utilization And Idle Report
 
-Command: `python aks_report.py utilization --all --days 14`
+Command: `uv run python aks_report.py utilization --all --days 14`
 
 Sheets created: `Utilization`, `IdleCandidates`, `Stopped`, `Summary`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `Utilization` | `cluster, subscription, environment, location, power_state, nodes, vm_sizes, allocatable_cores_avg, cpu_avg %, cpu_p95 %, cpu_max %, mem_avg %, mem_p95 %, mem_max %, samples, flag` | `aks-dev-01, contoso-dev, dev, eastus, Running, 7, Standard_D4as_v4; Standard_D4s_v3, 30, 5, 7, 17, 14, 16, 26, 72, IDLE` | Platform CPU/memory metrics, sample count, and an idle/OK flag. |
-| `IdleCandidates` | same as `Utilization` | `aks-dev-01, contoso-dev, dev, eastus, Running, 7, ..., IDLE` | Subset of clusters with low utilization. |
-| `Stopped` | same as `Utilization` | `aks-dev-02, contoso-dev, dev, eastus2, Stopped, 7, ..., samples=0, STOPPED` | Stopped clusters that may still have attached billing resources. |
+| `Utilization` | `cluster, subscription, environment, location, power_state, nodes, vm_sizes, allocatable_cores_avg, cpu_avg %, cpu_p95 %, cpu_max %, mem_avg %, mem_p95 %, mem_max %, samples, flag` | `aks-dev-01, contoso-platform, dev, eastus, Running, 7, Standard_D4as_v4; Standard_D4s_v3, 30, 5, 7, 17, 14, 16, 26, 72, IDLE` | Platform CPU/memory metrics, sample count, and an idle/OK flag. |
+| `IdleCandidates` | same as `Utilization` | `aks-dev-01, contoso-platform, dev, eastus, Running, 7, ..., IDLE` | Subset of clusters with low utilization. |
+| `Stopped` | same as `Utilization` | `aks-dev-02, contoso-platform, dev, eastus2, Stopped, 7, ..., samples=0, STOPPED` | Stopped clusters that may still have attached billing resources. |
 
 ### Governance Report
 
-Command: `python aks_report.py governance --all`
+Command: `uv run python aks_report.py governance --all`
 
 Sheets created: `Scorecard`, `FailDetails`, `FailuresByCheck`, `CheckLegend`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `Scorecard` | `cluster, subscription, environment, location, api_server_locked_down, local_accounts_disabled, aad_integration, rbac_enabled, managed_identity, paid_tier_for_prod, no_spot_in_prod, autoscaler_on_user_pools, multi_zone, network_policy_set, not_kubenet, monitoring_addon, azure_policy_addon, auto_upgrade_channel, node_os_channel, env_tagged, workload_identity, Score` | `aks-dev-01, contoso-dev, dev, eastus, FAIL, FAIL, FAIL, PASS, PASS, N-A, N-A, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, PASS, FAIL, formula` | PASS/FAIL/N-A hygiene checks and overall score. |
-| `FailDetails` | `cluster, subscription, environment, check, description, detail` | `aks-dev-01, contoso-dev, dev, api_server_locked_down, Private cluster or authorized IP ranges on the API server, API server is reachable from any internet IP` | Human-readable reason for every failed check. |
+| `Scorecard` | `cluster, subscription, environment, location, api_server_locked_down, local_accounts_disabled, aad_integration, rbac_enabled, managed_identity, paid_tier_for_prod, no_spot_in_prod, autoscaler_on_user_pools, multi_zone, network_policy_set, not_kubenet, monitoring_addon, azure_policy_addon, auto_upgrade_channel, node_os_channel, env_tagged, workload_identity, Score` | `aks-dev-01, contoso-platform, dev, eastus, FAIL, FAIL, FAIL, PASS, PASS, N-A, N-A, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, FAIL, PASS, FAIL, formula` | PASS/FAIL/N-A hygiene checks and overall score. |
+| `FailDetails` | `cluster, subscription, environment, check, description, detail` | `aks-dev-01, contoso-platform, dev, api_server_locked_down, Private cluster or authorized IP ranges on the API server, API server is reachable from any internet IP` | Human-readable reason for every failed check. |
 | `FailuresByCheck` | `check, failing_clusters` | `azure_policy_addon, 2` | Fleet-wide count of failures by control. |
 | `CheckLegend` | `check, description` | `api_server_locked_down, Private cluster or authorized IP ranges on the API server` | Meaning of each governance check. |
 
 ### Azure Policy Report
 
-Command: `python aks_report.py policy --all`
+Command: `uv run python aks_report.py policy --all`
 
 Sheets created: `Assignments`, `ClusterCompliance`, `NonCompliantDetail`,
 `KubernetesBlindSpots`, `Summary`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `Assignments` | `subscription, assignment, scope, inherited, enforcement, definition, category, is_initiative` | `contoso-dev, K8s pod security baseline, /providers/Microsoft.Management/managementGroups/corp, true, Default, Kubernetes cluster pod security baseline, Kubernetes, true` | Policy or initiative assignments visible at the subscription, including inherited management-group assignments. |
-| `ClusterCompliance` | `cluster, subscription, environment, Compliant, NonCompliant, NonCompliant %` | `aks-dev-01, contoso-dev, dev, 0, 1, formula` | Latest PolicyInsights compliance counts by cluster. |
-| `NonCompliantDetail` | `cluster, subscription, environment, policy, category, assignment, compliance, action, reference_id` | `aks-dev-01, contoso-dev, dev, Audit HTTPS ingress in AKS, Kubernetes, tls, NonCompliant, audit, blank` | Individual non-compliant policy states for AKS clusters. |
-| `KubernetesBlindSpots` | `cluster, subscription, environment, policy_addon_enabled, k8s_policies_assigned_in_sub, status` | `aks-dev-01, contoso-dev, dev, false, true, BLIND SPOT` | Flags clusters where Kubernetes-category policies are assigned but the Azure Policy addon is off. |
+| `Assignments` | `subscription, assignment, scope, inherited, enforcement, definition, category, is_initiative` | `contoso-platform, K8s pod security baseline, /providers/Microsoft.Management/managementGroups/corp, true, Default, Kubernetes cluster pod security baseline, Kubernetes, true` | Policy or initiative assignments visible at the subscription, including inherited management-group assignments. |
+| `ClusterCompliance` | `cluster, subscription, environment, Compliant, NonCompliant, NonCompliant %` | `aks-dev-01, contoso-platform, dev, 0, 1, formula` | Latest PolicyInsights compliance counts by cluster. |
+| `NonCompliantDetail` | `cluster, subscription, environment, policy, category, assignment, compliance, action, reference_id` | `aks-dev-01, contoso-platform, dev, Audit HTTPS ingress in AKS, Kubernetes, tls, NonCompliant, audit, blank` | Individual non-compliant policy states for AKS clusters. |
+| `KubernetesBlindSpots` | `cluster, subscription, environment, policy_addon_enabled, k8s_policies_assigned_in_sub, status` | `aks-dev-01, contoso-platform, dev, false, true, BLIND SPOT` | Flags clusters where Kubernetes-category policies are assigned but the Azure Policy addon is off. |
 
 ### Network And IP Capacity Report
 
-Command: `python aks_report.py network --all`
+Command: `uv run python aks_report.py network --all`
 
 Sheets created: `ClusterNetwork`, `SubnetCapacity`, `PoolSubnetUse`, `Issues`,
 `Summary`, `SummaryByModel`, `SummaryBySubnetStatus`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `ClusterNetwork` | `cluster, subscription, environment, location, network_model, network_plugin, network_plugin_mode, network_policy, outbound_type, lb_sku, private_cluster, authorized_ip_ranges, current_nodes, max_nodes, pools, node_subnets, pod_subnets` | `aks-dev-01, contoso-dev, dev, eastus, kubenet, kubenet, blank, blank, loadBalancer, standard, false, 0, 7, 9, 3, 1, 0` | Cluster-level networking model, API exposure, and subnet count. |
-| `SubnetCapacity` | `subnet_id, subscription, resource_group, vnet, subnet_name, location, roles, prefixes, usable_ipv4, current_ips_needed, max_ips_needed, current_utilization, max_utilization, clusters, pools, nsg_attached, route_table_attached, nat_gateway_attached, status, note` | `<subnetId>, contoso-prod, rg-network-prod, vnet-prod, aks-prod-nodes, westeurope, node; pod, 10.30.1.0/24, 251, 1221, 1221, 4.86, 4.86, 1, 3, true, true, false, CRITICAL, blank` | Subnet IP capacity and network controls such as NSG, route table, and NAT gateway. |
+| `ClusterNetwork` | `cluster, subscription, environment, location, network_model, network_plugin, network_plugin_mode, network_policy, outbound_type, lb_sku, private_cluster, authorized_ip_ranges, current_nodes, max_nodes, pools, node_subnets, pod_subnets` | `aks-dev-01, contoso-platform, dev, eastus, kubenet, kubenet, blank, blank, loadBalancer, standard, false, 0, 7, 9, 3, 1, 0` | Cluster-level networking model, API exposure, and subnet count. |
+| `SubnetCapacity` | `subnet_id, subscription, resource_group, vnet, subnet_name, location, roles, prefixes, usable_ipv4, current_ips_needed, max_ips_needed, current_utilization, max_utilization, clusters, pools, nsg_attached, route_table_attached, nat_gateway_attached, status, note` | `<subnetId>, contoso-shared, rg-network-prod, vnet-prod, aks-prod-nodes, westeurope, node; pod, 10.30.1.0/24, 251, 1221, 1221, 4.86, 4.86, 1, 3, true, true, false, CRITICAL, blank` | Subnet IP capacity and network controls such as NSG, route table, and NAT gateway. |
 | `PoolSubnetUse` | `cluster, pool, mode, priority, network_model, vm_size, current_nodes, max_nodes, max_pods, node_subnet_id, pod_subnet_id, node_ips_current, node_ips_at_max, pod_ips_current, pod_ips_at_max, warning` | `aks-dev-01, sys, System, Regular, kubenet, Standard_D4s_v3, 2, 2, 110, <subnetId>, blank, 2, 2, 0, 0, kubenet cluster; plan Azure CNI migration` | IP demand at node-pool level. |
-| `Issues` | `cluster, subscription, environment, object, severity, issue` | `aks-dev-01, contoso-dev, dev, sys, WARN, kubenet cluster; plan Azure CNI migration before retirement pressure` | Actionable network/IP warnings. |
+| `Issues` | `cluster, subscription, environment, object, severity, issue` | `aks-dev-01, contoso-platform, dev, sys, WARN, kubenet cluster; plan Azure CNI migration before retirement pressure` | Actionable network/IP warnings. |
 
 ### Tags And Chargeback Report
 
-Command: `python aks_report.py tags --all`
+Command: `uv run python aks_report.py tags --all`
 
 Sheets created: `TagMatrix`, `MissingTags`, `TagCoverage`, `TagValues`,
 `RawTags`, `Summary`, `SummaryBySubscription`, `SummaryByEnvironment`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `TagMatrix` | `cluster, subscription, environment, environment_source, location, resource_group, owner, owner_source, costcenter, costcenter_source, application, application_source, missing_required_tags, missing_tag_list, chargeback_status` | `aks-dev-01, contoso-dev, dev, cluster, eastus, rg-apps-dev, blank, blank, blank, blank, blank, blank, 3, owner; costcenter; application, PARTIAL` | One row per cluster showing required tag values, their source, and chargeback readiness. |
-| `MissingTags` | `cluster, subscription, environment, location, resource_group, missing_tag, impact` | `aks-dev-01, contoso-dev, dev, eastus, rg-apps-dev, owner, cost allocation blind spot` | Missing required tag findings. |
-| `TagCoverage` | `tag, clusters_present, clusters_missing, coverage, from_cluster_tag, from_resource_group_tag, from_resolved_env, from_name, from_subscription_csv` | `owner, 0, 3, 0, 0, 0, 0, 0, 0` | Coverage by required tag and source type. |
+| `TagMatrix` | `cluster, subscription, environment, environment_source, location, resource_group, owner, owner_source, costcenter, costcenter_source, application, application_source, missing_required_tags, missing_tag_list, chargeback_status` | `aks-dev-01, contoso-platform, dev, cluster, eastus, rg-apps-dev, blank, blank, blank, blank, blank, blank, 3, owner; costcenter; application, PARTIAL` | One row per cluster showing required tag values, their source, and chargeback readiness. |
+| `MissingTags` | `cluster, subscription, environment, location, resource_group, missing_tag, impact` | `aks-dev-01, contoso-platform, dev, eastus, rg-apps-dev, owner, cost allocation blind spot` | Missing required tag findings. |
+| `TagCoverage` | `tag, clusters_present, clusters_missing, coverage, from_cluster_tag, from_resource_group_tag, from_resolved_env, from_name` | `owner, 0, 3, 0, 0, 0, 0, 0` | Coverage by required tag and source type. |
 | `TagValues` | `tag, value, source, clusters, subscriptions` | `environment, dev, cluster, 1, 1` | Distinct tag values and how widely they appear. |
-| `RawTags` | `cluster, subscription, environment, scope, tag, value` | `aks-dev-01, contoso-dev, dev, cluster, environment, dev` | Raw tag rows from cluster and resource-group scopes. |
+| `RawTags` | `cluster, subscription, environment, scope, tag, value` | `aks-dev-01, contoso-platform, dev, cluster, environment, dev` | Raw tag rows from cluster and resource-group scopes. |
 
 ### Optimization Report
 
-Command: `python aks_report.py optimization --all --days 14`
+Command: `uv run python aks_report.py optimization --all --days 14`
 
 Sheets created: `ExecutiveSummary`, `SavingsCandidates`,
 `ClusterCostUtilization`, `PricingModelSplit`, `RawMonthly`.
 
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
-| `SavingsCandidates` | `cluster, subscription, environment, candidate, priority, avg_monthly_cost, estimated_monthly_saving, reason` | `aks-dev-02, contoso-dev, dev, STOPPED_BILLING, HIGH, 173, 173, Cluster is stopped but recent amortized cost still exists` | Prioritized savings queue with estimated monthly impact. |
-| `ClusterCostUtilization` | `cluster, subscription, environment, location, power_state, nodes, max_nodes, spot_nodes, regular_user_nodes, avg_monthly_cost, last_full_month_cost, window_total, MoM %, Spot %, RI+SP %, utilization_flag, cpu_avg %, cpu_p95 %, mem_avg %, mem_p95 %, samples, optimization_flags` | `aks-prod-01, contoso-prod, prod, westeurope, Running, 11, 11, 2, 6, 1277.67, 1606, 4334, 42.88%, 2.57%, 16.28%, OK, 47, 49, 64, 66, 72, blank` | Combined cost, utilization, and optimization signals by cluster. |
-| `PricingModelSplit` | `cluster, subscription, environment, cluster_id, OnDemand, Spot, Reservation, Total` | `aks-dev-01, contoso-dev, dev, <clusterId>, 1014, 141, 200, formula` | Pricing model mix used to find spot or commitment opportunities. |
-| `RawMonthly` | `cluster_id, cluster, subscription, environment, Month, PricingModel, Amortized node RG cost, Cluster fee` | `<clusterId>, aks-dev-01, contoso-dev, dev, 2026-03, OnDemand, 325, 0` | Raw cost inputs for the optimization calculations. |
+| `SavingsCandidates` | `cluster, subscription, environment, candidate, priority, avg_monthly_cost, estimated_monthly_saving, reason` | `aks-dev-02, contoso-platform, dev, STOPPED_BILLING, HIGH, 173, 173, Cluster is stopped but recent amortized cost still exists` | Prioritized savings queue with estimated monthly impact. |
+| `ClusterCostUtilization` | `cluster, subscription, environment, location, power_state, nodes, max_nodes, spot_nodes, regular_user_nodes, avg_monthly_cost, last_full_month_cost, window_total, MoM %, Spot %, RI+SP %, utilization_flag, cpu_avg %, cpu_p95 %, mem_avg %, mem_p95 %, samples, optimization_flags` | `aks-prod-01, contoso-shared, prod, westeurope, Running, 11, 11, 2, 6, 1277.67, 1606, 4334, 42.88%, 2.57%, 16.28%, OK, 47, 49, 64, 66, 72, blank` | Combined cost, utilization, and optimization signals by cluster. |
+| `PricingModelSplit` | `cluster, subscription, environment, cluster_id, OnDemand, Spot, Reservation, Total` | `aks-dev-01, contoso-platform, dev, <clusterId>, 1014, 141, 200, formula` | Pricing model mix used to find spot or commitment opportunities. |
+| `RawMonthly` | `cluster_id, cluster, subscription, environment, Month, PricingModel, Amortized node RG cost, Cluster fee` | `<clusterId>, aks-dev-01, contoso-platform, dev, 2026-03, OnDemand, 325, 0` | Raw cost inputs for the optimization calculations. |
 
 ### CVE / Prisma Vulnerability Report
 
-Command: `python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json`
+Command: `uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json`
 
 Sheets created: `CVESummary`, `PrismaFindings`, `Classification`,
 `Remediation`, `ByImage`, `ByPackage`, `ByLayer`, `CVEReference`,

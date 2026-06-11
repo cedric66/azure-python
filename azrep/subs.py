@@ -46,7 +46,7 @@ ENV_WORDS = {
 def load_subscriptions(path):
     if not os.path.exists(path):
         sys.exit("Input file not found: %s\nCreate it from the subscriptions.csv template "
-                 "(columns: subscription_id,subscription_name,environment,include)." % path)
+                 "(columns: subscription_id,subscription_name,include)." % path)
     subs, seen = [], set()
     with open(path, newline="", encoding="utf-8-sig") as f:
         for i, row in enumerate(csv.DictReader(f), 2):
@@ -63,7 +63,6 @@ def load_subscriptions(path):
             subs.append({
                 "subscription_id": sid,
                 "subscription_name": (row.get("subscription_name") or "").strip(),
-                "environment": norm_env(row.get("environment")),
                 "include": inc in ("y", "yes", "true", "1"),
             })
     active = [s for s in subs if s["include"]]
@@ -154,8 +153,8 @@ def infer_env_from_name(*names):
     return ""
 
 
-def resolve_env_detail(cluster_tags, rg_tags, sub_env, keys=None, names=()):
-    """Environment precedence: cluster tags -> RG tags -> names -> CSV value."""
+def resolve_env_detail(cluster_tags, rg_tags, keys=None, names=()):
+    """Environment precedence: cluster tags -> RG tags -> cluster/RG names."""
     keys = keys or DEFAULT_ENV_TAG_KEYS
     for label, src in (("cluster_tag", cluster_tags or {}), ("resource_group_tag", rg_tags or {})):
         low = {str(k).strip().lower(): str(v) for k, v in src.items() if v is not None}
@@ -165,13 +164,11 @@ def resolve_env_detail(cluster_tags, rg_tags, sub_env, keys=None, names=()):
     inferred = infer_env_from_name(*names)
     if inferred:
         return inferred, "name"
-    if norm_env(sub_env):
-        return norm_env(sub_env), "subscription_csv"
     return "", ""
 
 
-def resolve_env(cluster_tags, rg_tags, sub_env, keys=None, names=()):
-    env, _src = resolve_env_detail(cluster_tags, rg_tags, sub_env, keys, names)
+def resolve_env(cluster_tags, rg_tags, keys=None, names=()):
+    env, _src = resolve_env_detail(cluster_tags, rg_tags, keys, names)
     return env
 
 
@@ -226,8 +223,8 @@ def pick_scope(subs, args):
     print("\nScope step 1/3 - subscription")
     print("Press Enter for all %d included subscriptions, or choose numbers/names/ids." % len(subs))
     for i, s in enumerate(subs, 1):
-        print("  %2d) %-45s env=%s  %s" % (i, s["subscription_name"] or "(unnamed)",
-                                           s["environment"] or "?", s["subscription_id"]))
+        print("  %2d) %-45s %s" % (i, s["subscription_name"] or "(unnamed)",
+                                    s["subscription_id"]))
     raw = input("Subscriptions [all]: ").strip()
     if raw:
         idx, tokens = parse_selection(raw, len(subs))
@@ -241,8 +238,8 @@ def pick_scope(subs, args):
 
     print("\nScope step 2/3 - environment")
     print("Press Enter for all environments. Use 'nonprod' for anything not in --prod-values.")
-    print("CSV environments in selected subscriptions: %s" %
-          (", ".join(sorted({s["environment"] for s in sel if s["environment"]})) or "(none)"))
+    print("Environments are resolved per cluster from AKS tags, resource-group tags, "
+          "or cluster/resource-group names.")
     print("Name inference is %s; short-code map: %s" %
           ("on" if ENV_NAME_INFERENCE else "off",
            ", ".join("%s=%s" % (k, v) for k, v in sorted(ENV_CODE_MAP.items()))))
@@ -334,7 +331,8 @@ def scope_suffix(env_filter):
 def base_parser(desc):
     p = argparse.ArgumentParser(description=desc,
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    p.add_argument("--csv", default="subscriptions.csv", help="input subscription list")
+    p.add_argument("--csv", default="subscriptions.csv",
+                   help="input subscription list: subscription_id,subscription_name,include")
     p.add_argument("--out", default="reports", help="output directory")
     p.add_argument("--all", action="store_true",
                    help="all subscriptions, environments and clusters; no prompt")
@@ -354,7 +352,7 @@ def base_parser(desc):
         "%s=%s" % (k, v) for k, v in sorted(DEFAULT_ENV_CODE_MAP.items())),
                    help="name-token environment codes, e.g. d=dev,s=sit,r=dr")
     p.add_argument("--no-name-env", action="store_true",
-                   help="do not infer environment from cluster/RG/subscription names")
+                   help="do not infer environment from cluster or resource-group names")
     p.add_argument("--prod-values", default=",".join(sorted(DEFAULT_PROD_VALUES)),
                    help="environment values treated as prod by --nonprod")
     return p

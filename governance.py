@@ -88,9 +88,9 @@ CHECKS = [
      and c["node_os_upgrade_channel"].lower() not in ("none", "unmanaged")
      else ("FAIL", "node OS channel: %s" % (c["node_os_upgrade_channel"] or "none"))),
     ("env_tagged",
-     "Environment resolvable from tags/CSV",
+     "Environment resolvable from tags or names",
      lambda c, ps: ("PASS", "") if c["environment"] != "(unknown)"
-     else ("FAIL", "no environment tag and no CSV value")),
+     else ("FAIL", "no environment tag, resource-group tag, or name signal")),
     ("workload_identity",
      "Workload identity (or OIDC issuer) enabled",
      lambda c, ps: ("PASS", "") if c["workload_identity"] or c["oidc_issuer"]

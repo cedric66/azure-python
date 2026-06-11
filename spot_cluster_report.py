@@ -9,8 +9,8 @@ NodePoolSkuSummary, AutoscalerConfig, SpotAssessment, CostByCluster,
 CostTrend, CostByNodePool, OtherCostItems, CostByMeter, RawResourceCost.
 
 Usage:
-  python spot_cluster_report.py --subs contoso-dev --env dev
-  python spot_cluster_report.py --subs contoso-dev --only-spot-clusters
+  python spot_cluster_report.py --subs contoso-platform --env dev
+  python spot_cluster_report.py --subs contoso-platform --only-spot-clusters
 """
 import datetime as dt
 import re

@@ -133,7 +133,6 @@ def main(argv=None):
         rg_src = matrix[tag + "_source"].eq("resource_group")
         resolved_src = matrix[tag + "_source"].eq("resolved_env")
         name_src = matrix[tag + "_source"].eq("name")
-        csv_src = matrix[tag + "_source"].eq("subscription_csv")
         coverage_rows.append({
             "tag": tag,
             "clusters_present": int(present.sum()),
@@ -143,7 +142,6 @@ def main(argv=None):
             "from_resource_group_tag": int(rg_src.sum()),
             "from_resolved_env": int(resolved_src.sum()),
             "from_name": int(name_src.sum()),
-            "from_subscription_csv": int(csv_src.sum()),
         })
     coverage = pd.DataFrame(coverage_rows).sort_values("coverage")
 
@@ -176,7 +174,7 @@ def main(argv=None):
         (dt.datetime.now().strftime("%Y-%m-%d %H:%M"), env_filter or "all", len(matrix)),
         "",
         "A required tag can be present on the AKS cluster, inherited from the resource",
-        "group, or for environment only resolved through the same tag/CSV logic used by",
+        "group, or for environment only resolved through the same tag/name logic used by",
         "the other reports. Cluster-level tags are still the strongest source for direct",
         "cost allocation because child resources in MC_* groups may not inherit tags.",
         "",
@@ -190,7 +188,7 @@ def main(argv=None):
     excel.add_table(wb, "TagCoverage", coverage,
                     int_cols=("clusters_present", "clusters_missing", "from_cluster_tag",
                               "from_resource_group_tag", "from_resolved_env",
-                              "from_name", "from_subscription_csv"),
+                              "from_name"),
                     pct_cols=("coverage",), colorscale_cols=("coverage",))
     excel.add_table(wb, "TagValues", value_dist,
                     int_cols=("clusters", "subscriptions"), max_width=70)

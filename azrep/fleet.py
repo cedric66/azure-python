@@ -31,7 +31,7 @@ def _ap(auto, *names):
     return ""
 
 
-def _flatten_cluster(c, rg_tags, sub_env, sub_name, env_keys):
+def _flatten_cluster(c, rg_tags, sub_name, env_keys):
     net = c.get("networkProfile") or {}
     api = c.get("apiServerAccessProfile") or {}
     aad = c.get("aadProfile") or {}
@@ -44,9 +44,8 @@ def _flatten_cluster(c, rg_tags, sub_env, sub_name, env_keys):
     rgt = rg_tags.get((c["subscriptionId"], str(c["resourceGroup"]).lower()), {})
 
     env, env_source = resolve_env_detail(
-        tags, rgt, sub_env, env_keys,
-        names=(c.get("name"), c.get("resourceGroup"), c.get("nodeResourceGroup"),
-               sub_name),
+        tags, rgt, env_keys,
+        names=(c.get("name"), c.get("resourceGroup"), c.get("nodeResourceGroup")),
     )
     spot_pools = [p for p in pools if str(p.get("scaleSetPriority", "")).lower() == "spot"]
     user_pools = [p for p in pools if str(p.get("mode", "User")).lower() == "user"]
@@ -181,7 +180,6 @@ def _flatten_pool(cl, p):
 def load_fleet(session, sel_subs, env_filter=None, include_unknown=False, env_keys=None):
     """Returns (clusters, pools) as lists of dicts, already filtered by environment."""
     sub_ids = [s["subscription_id"] for s in sel_subs]
-    sub_env = {s["subscription_id"]: s["environment"] for s in sel_subs}
     sub_name = {s["subscription_id"]: s["subscription_name"] for s in sel_subs}
 
     log("Resource Graph: fetching clusters, resource groups and subscription names...")
@@ -193,8 +191,7 @@ def load_fleet(session, sel_subs, env_filter=None, include_unknown=False, env_ke
             sub_name[s["subscriptionId"]] = s.get("name")
     rg_tags = {(r["subscriptionId"], r["name"]): (r.get("tags") or {}) for r in rg_rows}
 
-    clusters = [_flatten_cluster(c, rg_tags, sub_env.get(c["subscriptionId"], ""),
-                                 sub_name.get(c["subscriptionId"]), env_keys)
+    clusters = [_flatten_cluster(c, rg_tags, sub_name.get(c["subscriptionId"]), env_keys)
                 for c in raw]
     total = len(clusters)
     clusters = [c for c in clusters

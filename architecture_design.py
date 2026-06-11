@@ -9,8 +9,8 @@ ResourceCounts, Components, Diagrams.
 
 Usage:
   python architecture_design.py --cluster aks-dev-01 --all
-  python architecture_design.py --subs contoso-dev --resource-group rg-apps-dev
-  python architecture_design.py --subs contoso-dev --all
+  python architecture_design.py --subs contoso-platform --resource-group rg-apps-dev
+  python architecture_design.py --subs contoso-platform --all
 """
 import datetime as dt
 import os

@@ -1,7 +1,7 @@
 """Offline smoke test: runs every report script end-to-end against mocked Azure
 API responses and validates the generated workbooks. No Azure access needed.
 
-  python tests/smoke_test.py
+  uv run python tests/smoke_test.py
 """
 import datetime as dt
 import json
@@ -169,8 +169,8 @@ RGS = [
     {"subscriptionId": S2, "name": "rg-prod", "tags": {"environment": "prod"}},
 ]
 SUBNAMES = [
-    {"subscriptionId": S1, "name": "contoso-dev"},
-    {"subscriptionId": S2, "name": "contoso-prod"},
+    {"subscriptionId": S1, "name": "contoso-platform"},
+    {"subscriptionId": S2, "name": "contoso-shared"},
 ]
 SUBNETS = [
     {"id": S1_DEV_SUBNET, "name": "aks-dev-nodes", "subscriptionId": S1,
@@ -524,8 +524,8 @@ def main():
     tmp = tempfile.mkdtemp(prefix="aksrep_")
     csv_path = os.path.join(tmp, "subscriptions.csv")
     with open(csv_path, "w", encoding="utf-8") as f:
-        f.write("subscription_id,subscription_name,environment,include\n")
-        f.write("%s,contoso-dev,dev,Y\n%s,contoso-prod,prod,Y\n" % (S1, S2))
+        f.write("subscription_id,subscription_name,include\n")
+        f.write("%s,contoso-platform,Y\n%s,contoso-shared,Y\n" % (S1, S2))
     out = os.path.join(tmp, "reports")
 
     import architecture_design
