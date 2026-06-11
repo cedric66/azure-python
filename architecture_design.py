@@ -24,8 +24,9 @@ from azrep.http_client import connect, log
 from azrep.subs import (base_parser, cluster_filter_empty, load_subscriptions,
                         out_path, pick_scope)
 
+# Azure Resource Graph's REST API rejects KQL line comments (// ...), so this
+# query must start with the table name, like every query in azrep/arg.py.
 RESOURCE_INVENTORY_KQL = """
-// aks_reporting_resource_inventory
 Resources
 %s
 | project id, name, type = tolower(type), subscriptionId, resourceGroup, location,

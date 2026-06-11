@@ -434,7 +434,7 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
     low = url.lower()
     if "microsoft.resourcegraph/resources" in low:
         q = payload["query"]
-        if "aks_reporting_resource_inventory" in q.lower():
+        if "tolower(type)" in q.lower():
             data = RESOURCES
             m = re.search(r"tolower\(resourcegroup\)\s+in\s+\(([^)]*)\)", q, re.I)
             if m:
