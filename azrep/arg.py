@@ -1,6 +1,8 @@
 """Azure Resource Graph client: one paged query covers all subscriptions at once,
 which is what keeps a 25-subscription / 500-cluster sweep down to a handful of calls."""
 
+from .http_client import AzureApiError
+
 API = "/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01"
 
 CLUSTERS_KQL = """
@@ -76,8 +78,14 @@ def query(session, kql, subscription_ids, page=1000):
             opts = {"resultFormat": "objectArray", "$top": page}
             if skip:
                 opts["$skipToken"] = skip
-            data = session.post(API, payload={"subscriptions": chunk, "query": kql,
-                                              "options": opts})
+            try:
+                data = session.post(API, payload={"subscriptions": chunk, "query": kql,
+                                                  "options": opts})
+            except AzureApiError as e:
+                raise AzureApiError(
+                    "Resource Graph query failed (%d subscription(s)): %s\n"
+                    "--- KQL sent to Azure ---\n%s\n-------------------------"
+                    % (len(chunk), e, kql.strip()), e.status, e.body) from e
             rows.extend(data.get("data") or [])
             skip = data.get("$skipToken")
             if not skip:
