@@ -57,6 +57,69 @@ The files below are the modules the launcher calls.
 | `optimization_report.py` | Prioritized cost-optimization queue combining amortized cost, utilization, spot/RI/SP signals, stopped-billing candidates | Cost Mgmt, ARG, Monitor |
 | `vulnerability_report.py` | Prisma XLSX/CVE-list enrichment and base-image/application/platform classification with remediation guidance | Prisma XLSX, classification rules, NVD/CISA KEV/EPSS |
 
+## Setup (Local Linux)
+
+Requires Python 3.11+ and subscription-level Azure read access. Dependencies are
+managed by `uv` from `pyproject.toml` and `uv.lock`.
+
+Install OS prerequisites, clone the repo, install `uv`, and sync the locked
+environment:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl git
+
+git clone git@github.com:cedric66/azure-python.git
+cd azure-python
+
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+
+uv python install 3.11
+uv sync --frozen
+mkdir -p reports exports
+```
+
+Configure `subscriptions.csv` with the subscriptions and environments to scan,
+then authenticate with one of the credential methods used by
+`DefaultAzureCredential`.
+
+Azure CLI login:
+
+```bash
+az login
+az account set --subscription "<subscription-id>"
+```
+
+Service-principal login:
+
+```bash
+export AZURE_CLIENT_ID="<app-id>"
+export AZURE_CLIENT_SECRET="<secret>"
+export AZURE_TENANT_ID="<tenant-id>"
+```
+
+Run the launcher through `uv`:
+
+```bash
+uv run --frozen python aks_report.py --help
+uv run --frozen python aks_report.py list
+uv run --frozen python aks_report.py inventory --all
+uv run --frozen python aks_report.py cost --env dev
+```
+
+Common `uv` commands for this project:
+
+```bash
+uv sync --frozen                         # install exactly from uv.lock
+uv sync                                  # resync after pulling repo changes
+uv run --frozen python aks_report.py ... # run reports in the project env
+uv run --frozen python tests/smoke_test.py
+uv add <package>                         # add a runtime dependency
+uv lock                                  # refresh uv.lock after dependency edits
+uv tree                                  # inspect resolved dependencies
+```
+
 ## Setup (Linux / Docker)
 
 The intended runtime is Linux in Docker.
@@ -499,9 +562,9 @@ environment for repeatable local and Docker runs on Python 3.11+:
 
 ## Testing without Azure
 
-```bat
-uv run python tests\smoke_test.py
-uv run python tests\test_vulnerability_report.py
+```bash
+uv run --frozen python tests/smoke_test.py
+uv run --frozen python tests/test_vulnerability_report.py
 ```
 
 Runs the launcher and all fifteen report modules end-to-end against mocked Azure
