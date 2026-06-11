@@ -24,13 +24,15 @@ from azrep.http_client import connect, log
 from azrep.subs import (base_parser, cluster_filter_empty, load_subscriptions,
                         out_path, pick_scope)
 
-# Azure Resource Graph's REST API rejects KQL line comments (// ...), so this
-# query must start with the table name, like every query in azrep/arg.py.
+# Azure Resource Graph uses a stricter KQL subset than Kusto/Log Analytics:
+#  - it rejects line comments (// ...), so the query must start with the table;
+#  - `kind` is a reserved keyword, so it must be projected bare (not `kind = ...`),
+#    or the parser fails at the `=`. `=` aliasing itself is fine (see type below).
 RESOURCE_INVENTORY_KQL = """
 Resources
 %s
 | project id, name, type = tolower(type), subscriptionId, resourceGroup, location,
-    kind = tostring(kind),
+    kind,
     sku_name = tostring(sku.name),
     sku_tier = tostring(sku.tier),
     provisioning_state = tostring(properties.provisioningState),
