@@ -286,6 +286,187 @@ def _mk_cost_records():
 COST_RECORDS = _mk_cost_records()
 
 
+# --- single-subscription re-architecture fixture (subscription_rearch) -------
+# A small synthetic estate in S1 used only by the `rearch` report. Routed in the
+# fake ARG handler by query markers so it never disturbs the AKS fixtures above.
+RE_RG_APP = "rg-rearch-app-dev"
+RE_RG_NET = "rg-rearch-net"
+RE_LOC = "eastus"
+
+
+def _rid(provider, name, rg=RE_RG_APP):
+    return ("/subscriptions/%s/resourceGroups/%s/providers/%s/%s"
+            % (S1, rg, provider, name))
+
+
+RE_VM_RUNNING = _rid("Microsoft.Compute/virtualMachines", "vm-dev-app-01")
+RE_VM_STOPPED = _rid("Microsoft.Compute/virtualMachines", "vm-dev-legacy-01")
+RE_DISK_ORPHAN = _rid("Microsoft.Compute/disks", "disk-orphan-01")
+RE_PIP_IDLE = _rid("Microsoft.Network/publicIPAddresses", "pip-idle-01", RE_RG_NET)
+RE_ASP_EMPTY = _rid("Microsoft.Web/serverfarms", "asp-empty-01")
+RE_SA_GRS = _rid("Microsoft.Storage/storageAccounts", "stgrsdev01")
+RE_FW = _rid("Microsoft.Network/azureFirewalls", "fw-dev-01", RE_RG_NET)
+
+RE_RESOURCES = [
+    {"id": RE_VM_RUNNING, "name": "vm-dev-app-01",
+     "type": "microsoft.compute/virtualmachines", "kind": "",
+     "resourceGroup": RE_RG_APP, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "", "sku_tier": "", "sku_capacity": "", "tags": {"env": "dev"}},
+    {"id": RE_VM_STOPPED, "name": "vm-dev-legacy-01",
+     "type": "microsoft.compute/virtualmachines", "kind": "",
+     "resourceGroup": RE_RG_APP, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "", "sku_tier": "", "sku_capacity": "", "tags": {"env": "dev"}},
+    {"id": RE_DISK_ORPHAN, "name": "disk-orphan-01",
+     "type": "microsoft.compute/disks", "kind": "",
+     "resourceGroup": RE_RG_APP, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "Premium_LRS", "sku_tier": "", "sku_capacity": "", "tags": {}},
+    {"id": RE_PIP_IDLE, "name": "pip-idle-01",
+     "type": "microsoft.network/publicipaddresses", "kind": "",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "Standard", "sku_tier": "", "sku_capacity": "", "tags": {}},
+    {"id": RE_ASP_EMPTY, "name": "asp-empty-01",
+     "type": "microsoft.web/serverfarms", "kind": "app",
+     "resourceGroup": RE_RG_APP, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "P1v2", "sku_tier": "PremiumV2", "sku_capacity": "1", "tags": {}},
+    {"id": RE_SA_GRS, "name": "stgrsdev01",
+     "type": "microsoft.storage/storageaccounts", "kind": "StorageV2",
+     "resourceGroup": RE_RG_APP, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "Standard_GRS", "sku_tier": "Standard", "sku_capacity": "",
+     "tags": {"env": "dev"}},
+    {"id": RE_FW, "name": "fw-dev-01",
+     "type": "microsoft.network/azurefirewalls", "kind": "",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "AZFW_VNet", "sku_tier": "Standard", "sku_capacity": "", "tags": {}},
+]
+
+RE_DISKS = [{"id": RE_DISK_ORPHAN, "name": "disk-orphan-01",
+             "resourceGroup": RE_RG_APP, "location": RE_LOC,
+             "sku_name": "Premium_LRS", "diskSizeGB": 256, "diskState": "Unattached",
+             "timeCreated": "2025-01-10T00:00:00Z"}]
+RE_PIPS = [{"id": RE_PIP_IDLE, "name": "pip-idle-01", "resourceGroup": RE_RG_NET,
+            "location": RE_LOC, "sku_name": "Standard", "allocationMethod": "Static"}]
+RE_NICS = []
+RE_LBS = []
+RE_VMS = [
+    {"id": RE_VM_RUNNING, "name": "vm-dev-app-01", "resourceGroup": RE_RG_APP,
+     "location": RE_LOC, "vmSize": "Standard_D4s_v5",
+     "powerState": "PowerState/running", "tags": {"env": "dev"}},
+    {"id": RE_VM_STOPPED, "name": "vm-dev-legacy-01", "resourceGroup": RE_RG_APP,
+     "location": RE_LOC, "vmSize": "Standard_D2s_v5",
+     "powerState": "PowerState/stopped", "tags": {"env": "dev"}},
+]
+RE_VMSS = []
+RE_SNAPSHOTS = []
+RE_ASPS = [{"id": RE_ASP_EMPTY, "name": "asp-empty-01", "resourceGroup": RE_RG_APP,
+            "location": RE_LOC, "sku_name": "P1v2", "sku_tier": "PremiumV2",
+            "sku_capacity": "1", "numberOfSites": 0}]
+RE_GATEWAYS = [{"id": RE_FW, "name": "fw-dev-01",
+                "type": "microsoft.network/azurefirewalls",
+                "resourceGroup": RE_RG_NET, "location": RE_LOC,
+                "sku_name": "AZFW_VNet", "sku_tier": "Standard", "gwType": ""}]
+RE_STORAGE = [{"id": RE_SA_GRS, "name": "stgrsdev01", "resourceGroup": RE_RG_APP,
+               "location": RE_LOC, "sku_name": "Standard_GRS", "sku_tier": "Standard",
+               "kind": "StorageV2", "accessTier": "Hot"}]
+RE_SQL = []
+RE_ADVISOR = [{"id": "/subscriptions/%s/providers/Microsoft.Advisor/recommendations/adv-1" % S1,
+               "category": "Cost", "impact": "High",
+               "problem": "Right-size or shut down underutilized virtual machines",
+               "solution": "Resize vm-dev-app-01 to a smaller SKU",
+               "impactedResource": RE_VM_RUNNING,
+               "impactedType": "Microsoft.Compute/virtualMachines",
+               "annualSavings": "1200", "savingsCurrency": "USD"}]
+RE_RGS = [{"subscriptionId": S1, "name": RE_RG_APP.lower(), "tags": {"env": "dev"}},
+          {"subscriptionId": S1, "name": RE_RG_NET.lower(), "tags": {}}]
+
+# Per-resource cost rows for the rearch fixture: (resource_id, monthly USD).
+RE_COST = {
+    RE_VM_RUNNING: 300.0, RE_VM_STOPPED: 80.0, RE_DISK_ORPHAN: 35.0,
+    RE_PIP_IDLE: 4.0, RE_ASP_EMPTY: 120.0, RE_SA_GRS: 60.0, RE_FW: 900.0,
+}
+RE_SERVICES = {
+    RE_VM_RUNNING: "Virtual Machines", RE_VM_STOPPED: "Virtual Machines",
+    RE_DISK_ORPHAN: "Storage", RE_PIP_IDLE: "Virtual Network",
+    RE_ASP_EMPTY: "Azure App Service", RE_SA_GRS: "Storage",
+    RE_FW: "Azure Firewall",
+}
+
+
+# (query marker -> rearch fixture). Order matters: the ALL_RESOURCES projection
+# is matched last because it shares `tolower(type)` with several others.
+_REARCH_ROUTES = [
+    ("advisorresources", lambda: RE_ADVISOR),
+    ("diskstate", lambda: RE_DISKS),
+    ("ipconfiguration", lambda: RE_PIPS),
+    ("isempty(properties.privateendpoint)", lambda: RE_NICS),
+    ("backendaddresspools", lambda: RE_LBS),
+    ("extend powerstate", lambda: RE_VMS),
+    ("snapshots", lambda: RE_SNAPSHOTS),
+    ("serverfarms", lambda: RE_ASPS),
+    ("azurefirewalls", lambda: RE_GATEWAYS),
+    ("storageaccounts", lambda: RE_STORAGE),
+    ("servers/databases", lambda: RE_SQL),
+]
+
+
+def _rearch_kind(q):
+    """Return a rearch route key for q, or None if it is not a rearch query."""
+    ql = q.lower()
+    # VMSS query: scale sets projected with sku_capacity but no extend/where body.
+    if ("virtualmachinescalesets" in ql and "sku_capacity = tostring(sku.capacity)" in ql
+            and "where type =~ 'microsoft.compute/virtualmachinescalesets'" in ql):
+        return "vmss"
+    for marker, _ in _REARCH_ROUTES:
+        if marker in ql:
+            return marker
+    # ALL_RESOURCES_KQL: bare project with sku_capacity, no where clause.
+    if ("sku_capacity = tostring(sku.capacity)" in ql and "tolower(type)" in ql
+            and " where " not in ql.replace("\n", " ")):
+        return "all"
+    return None
+
+
+def _is_rearch(q):
+    return _rearch_kind(q) is not None
+
+
+def _rearch_arg(q, subs):
+    """Route a subscription_rearch ARG query to its fixture (S1 only)."""
+    kind = _rearch_kind(q)
+    if S1 not in subs:
+        return []
+    if kind == "all":
+        return RE_RESOURCES
+    if kind == "vmss":
+        return RE_VMSS
+    for marker, getter in _REARCH_ROUTES:
+        if kind == marker:
+            return getter()
+    return []
+
+
+def _rearch_cost(payload, groups):
+    """subscription_rearch cost: ResourceId/ServiceName grouping over RE_COST.
+    Each resource's monthly cost lands in every full month; the current MTD
+    month gets a smaller partial so MoM trend has a real previous month."""
+    gran = payload["dataset"].get("granularity", "Monthly")
+    cur = TODAY.strftime("%Y-%m")
+    agg = {}
+    for rid, monthly in RE_COST.items():
+        svc = RE_SERVICES.get(rid, "Other")
+        for mo in MONTHS:
+            v = monthly * (0.3 if mo == cur else 1.0)
+            key = tuple({"ResourceId": rid, "ServiceName": svc}[g] for g in groups)
+            period = "%s-01T00:00:00" % mo
+            agg[(key, period)] = agg.get((key, period), 0.0) + v
+    columns = ([{"name": "Cost", "type": "Number"}, {"name": "CostUSD", "type": "Number"}]
+               + [{"name": g, "type": "String"} for g in groups]
+               + [{"name": "BillingMonth", "type": "String"},
+                  {"name": "Currency", "type": "String"}])
+    rows = [[round(v, 4), round(v, 4)] + list(k) + [period, "USD"]
+            for (k, period), v in sorted(agg.items(), key=lambda kv: str(kv[0]))]
+    return {"properties": {"columns": columns, "rows": rows, "nextLink": None}}
+
+
 def _cost_response(url, payload):
     scope = url.split("/providers/Microsoft.CostManagement")[0].lower()
     sub = scope.split("/subscriptions/")[1].split("/")[0]
@@ -294,6 +475,8 @@ def _cost_response(url, payload):
     gran = ds.get("granularity", "Monthly")
     groups = [g["name"] for g in ds.get("grouping", [])]
     metric = payload.get("type", "AmortizedCost")
+    if "ServiceName" in groups:
+        return _rearch_cost(payload, groups)
 
     recs = [r for r in COST_RECORDS if r["rid"].lower().startswith("/subscriptions/" + sub)]
     if rg_scope:
@@ -434,6 +617,10 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
     low = url.lower()
     if "microsoft.resourcegraph/resources" in low:
         q = payload["query"]
+        subs_l = [s.lower() for s in payload["subscriptions"]]
+        if _is_rearch(q):
+            data = _rearch_arg(q, subs_l)
+            return {"data": data or [], "$skipToken": None}
         if "tolower(type)" in q.lower():
             data = RESOURCES
             m = re.search(r"tolower\(resourcegroup\)\s+in\s+\(([^)]*)\)", q, re.I)
@@ -529,8 +716,10 @@ def main():
     out = os.path.join(tmp, "reports")
 
     import architecture_design
+    import cluster_360
     import cluster_deepdive
     import aks_report
+    import conformance
     import fleet_cost
     import fleet_inventory
     import governance
@@ -538,26 +727,42 @@ def main():
     import optimization_report
     import policy_report
     import spot_cluster_report
-    import spot_opportunity
+    import subscription_rearch
     import tag_chargeback
     import utilization_idle
     import version_eol
     from azrep import sandbox
-    for mod in (architecture_design, cluster_deepdive, fleet_cost, fleet_inventory, governance,
+    # the sandbox helper modules must import without azure.identity / live Azure
+    import azrep.kubectl  # noqa: F401
+    import azrep.sandbox_clone  # noqa: F401
+    import azrep.sandbox_impact  # noqa: F401
+    import azrep.sandbox_k8s  # noqa: F401
+    import azrep.sandbox_spot  # noqa: F401
+    import azrep.sandbox_upgrade  # noqa: F401
+    for mod in (architecture_design, cluster_360, cluster_deepdive, conformance,
+                fleet_cost, fleet_inventory, governance,
                 network_ip_capacity, optimization_report, policy_report,
-                spot_cluster_report, spot_opportunity, tag_chargeback, utilization_idle, version_eol):
+                spot_cluster_report, subscription_rearch, tag_chargeback,
+                utilization_idle, version_eol):
         mod.connect = fake_connect
 
     from openpyxl import Workbook, load_workbook
 
-    def run(mod, argv, expect_sheets, checks=None):
+    def run(mod, argv, expect_sheets, checks=None, expect_companions=()):
         name = mod.__name__
         print("\n=== %s %s ===" % (name, " ".join(argv)))
         before = set(os.listdir(out)) if os.path.isdir(out) else set()
         mod.main(argv)
         new = [f for f in os.listdir(out) if f not in before]
-        assert len(new) == 1, "%s: expected 1 new xlsx, got %s" % (name, new)
-        path = os.path.join(out, new[0])
+        new_xlsx = [f for f in new if f.endswith(".xlsx")]
+        assert len(new_xlsx) == 1, "%s: expected 1 new xlsx, got %s" % (name, new)
+        for ext in expect_companions:
+            assert any(f.endswith(ext) for f in new), \
+                "%s: expected a companion %s file, got %s" % (name, ext, new)
+        extra = [f for f in new if not f.endswith(".xlsx")
+                 and not any(f.endswith(e) for e in expect_companions)]
+        assert not extra, "%s: unexpected extra output files %s" % (name, extra)
+        path = os.path.join(out, new_xlsx[0])
         wb = load_workbook(path)
         for sheet in expect_sheets:
             assert sheet in wb.sheetnames, "%s: missing sheet %s (has %s)" % (
@@ -592,10 +797,35 @@ def main():
                             "launcher should route inventory report with filters")])
 
     run(architecture_design, base + ["--all", "--cluster", "aks-dev-01", "--no-doc"],
-        ["ReadMe", "DesignSummary", "Clusters", "NodePools", "Network", "Subnets",
-         "Resources", "ResourceCounts", "Components", "Diagrams"],
+        ["ReadMe", "Summary", "Clusters", "NodePools", "Network", "Subnets",
+         "Resources", "ResourceCounts", "Components", "Relationships", "Diagrams"],
         [lambda wb: _expect(wb["Components"].max_row > 3,
-                            "design report should include cluster components")])
+                            "design report should include cluster components"),
+         lambda wb: _expect(wb["Relationships"].max_row > 5,
+                            "design report should map cluster relationships")])
+
+    before_doc = set(os.listdir(out))
+    run(architecture_design, base + ["--all", "--cluster", "aks-dev-01"],
+        ["ReadMe", "Summary", "Relationships", "Diagrams"],
+        expect_companions=(".md", ".drawio"))
+    import xml.etree.ElementTree as ET
+    new_doc = [f for f in os.listdir(out) if f not in before_doc]
+    md_path = os.path.join(out, next(f for f in new_doc if f.endswith(".md")))
+    with open(md_path, encoding="utf-8") as f:
+        md = f.read()
+    _expect("## Relationship overview" in md and "```mermaid" in md,
+            "design doc should contain the Mermaid relationship overview")
+    drawio_path = os.path.join(out, next(f for f in new_doc if f.endswith(".drawio")))
+    tree = ET.parse(drawio_path)
+    page_names = [d.get("name") for d in tree.getroot().findall("diagram")]
+    _expect(page_names[0] == "Fleet relationships" and "aks-dev-01" in page_names,
+            "drawio file should have an overview page and a cluster page: %s" % page_names)
+    cells = tree.getroot().findall(".//mxCell")
+    labels = " | ".join(c.get("value") or "" for c in cells)
+    _expect("AKS: aks-dev-01" in labels and "Subnet:" in labels,
+            "drawio diagram should contain cluster and subnet nodes")
+    _expect(any(c.get("edge") == "1" for c in cells),
+            "drawio diagram should contain relationship edges")
 
     def chk_sku(wb):
         vals = [wb["SKUChanges"].cell(row=r, column=3).value
@@ -608,10 +838,24 @@ def main():
          "AmortizedVsActual", "SKUChanges", "NodePools", "Utilization", "ActivityLog"],
         [chk_sku])
 
+    def chk_sections(wb):
+        names = wb.sheetnames
+        _expect(names[0] == "ReadMe" and names[1] == "SummaryBySubscription"
+                and names[-1] == "RawMonthly",
+                "sections should order ReadMe, summary, detail, reference: %s" % names)
+        _expect(wb["SummaryBySubscription"].sheet_properties.tabColor is not None
+                and wb["RawMonthly"].sheet_properties.tabColor is not None,
+                "summary and reference tabs should be colored")
+        readme = [wb["ReadMe"].cell(row=r, column=1).value
+                  for r in range(1, wb["ReadMe"].max_row + 1)]
+        _expect(any(str(v).startswith("Tab sections:") for v in readme),
+                "ReadMe should list the tab index")
+
     run(fleet_cost, base + ["--all", "--actual"],
         ["ReadMe", "ClusterCosts", "PricingModelSplit", "TopMovers", "MeterChanges",
-         "BySubscription", "RawMonthly"],
-        [lambda wb: _expect(wb["ClusterCosts"].max_row == 4, "3 clusters in ClusterCosts")])
+         "SummaryBySubscription", "RawMonthly"],
+        [lambda wb: _expect(wb["ClusterCosts"].max_row == 4, "3 clusters in ClusterCosts"),
+         chk_sections])
 
     def chk_eol(wb):
         ws = wb["VersionStatus"]
@@ -623,9 +867,6 @@ def main():
         ["ReadMe", "VersionStatus", "NodeImageAge", "SupportedVersions", "Summary"],
         [chk_eol])
 
-    run(spot_opportunity, base + ["--nonprod"],
-        ["ReadMe", "SpotToday", "Candidates", "PriceReference", "Summary"])
-
     def chk_spot_detail(wb):
         _expect(wb["SpotNodePools"].max_row >= 3,
                 "spot detail should include existing spot pools")
@@ -635,15 +876,57 @@ def main():
         checks = {ws.cell(row=r, column=check_col).value for r in range(2, ws.max_row + 1)}
         _expect("system_on_demand_pool" in checks and "spot_multi_vm_family" in checks,
                 "spot assessment checks missing: %s" % checks)
+        ws = wb["Candidates"]
+        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        _expect("Est monthly saving" in headers and ws.max_row >= 2,
+                "merged spot report should screen candidates with retail savings")
 
-    run(spot_cluster_report, base + ["--all", "--only-spot-clusters"],
-        ["ReadMe", "ClusterSpotSummary", "SpotNodePools", "OnDemandNodePools",
-         "NodePoolSkuSummary", "AutoscalerConfig", "SpotAssessment", "CostByCluster",
-         "CostTrend", "CostByNodePool", "OtherCostItems", "CostByMeter", "RawResourceCost"],
+    run(spot_cluster_report, base + ["--all"],
+        ["ReadMe", "Summary", "SpotNodePools", "OnDemandNodePools",
+         "NodePoolSkuSummary", "AutoscalerConfig", "SpotAssessment", "Candidates",
+         "CostByCluster", "CostTrend", "CostByNodePool", "OtherCostItems",
+         "CostByMeter", "PriceReference", "RawResourceCost"],
         [chk_spot_detail])
+
+    run(aks_report, ["spot"] + base + ["--all", "--only-spot-clusters", "--no-retail-prices"],
+        ["ReadMe", "Summary", "SpotNodePools", "SpotAssessment", "CostByCluster"],
+        [lambda wb: _expect(wb["SpotNodePools"].max_row >= 3,
+                            "spot alias should route to the merged spot report")])
 
     run(utilization_idle, base + ["--all", "--days", "3"],
         ["ReadMe", "Utilization", "IdleCandidates", "Stopped", "Summary"])
+
+    def chk_360(wb):
+        ws = wb["Cluster360"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        cat_col = hdr.index("category") + 1
+        cats = {ws.cell(row=r, column=1).value: ws.cell(row=r, column=cat_col).value
+                for r in range(2, ws.max_row + 1)}
+        _expect(cats.get("aks-dev-01") == "UPGRADE NOW",
+                "aks-dev-01 (1.29, unsupported) should be UPGRADE NOW: %s" % cats)
+        _expect(cats.get("aks-dev-02") == "STOPPED BILLING",
+                "aks-dev-02 (stopped) should be STOPPED BILLING: %s" % cats)
+        _expect(cats.get("aks-prod-01") == "COST HOTSPOT",
+                "aks-prod-01 (+46%% MoM) should be COST HOTSPOT: %s" % cats)
+        ws = wb["ActionItems"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        sev_col = hdr.index("severity") + 1
+        sevs = {ws.cell(row=r, column=sev_col).value for r in range(2, ws.max_row + 1)}
+        _expect("HIGH" in sevs and "MEDIUM" in sevs,
+                "ActionItems should carry HIGH and MEDIUM findings: %s" % sevs)
+
+    run(cluster_360, base + ["--all", "--days", "3"],
+        ["ReadMe", "Summary", "SummaryBySubscription", "SummaryByEnvironment",
+         "Cluster360", "ActionItems", "NodePools", "PricingModelSplit",
+         "Utilization", "RawMonthlyCost", "CategoryLegend"],
+        [chk_360])
+
+    run(aks_report, ["360"] + base + ["--all", "--no-cost", "--no-metrics", "--days", "3"],
+        ["ReadMe", "Summary", "Cluster360", "ActionItems", "NodePools",
+         "CategoryLegend"],
+        [lambda wb: _expect("PricingModelSplit" not in wb.sheetnames
+                            and "Utilization" not in wb.sheetnames,
+                            "--no-cost/--no-metrics should drop cost and metrics tabs")])
 
     def chk_gov(wb):
         ws = wb["Scorecard"]
@@ -656,6 +939,73 @@ def main():
     run(governance, base + ["--all"],
         ["ReadMe", "Scorecard", "FailDetails", "FailuresByCheck", "CheckLegend"],
         [chk_gov])
+
+    def chk_rearch(wb):
+        ws = wb["Findings"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        sev_col = hdr.index("severity") + 1
+        chk_col = hdr.index("check") + 1
+        sav_col = hdr.index("Est saving (USD)") + 1
+        rows = [(ws.cell(row=r, column=sev_col).value,
+                 ws.cell(row=r, column=chk_col).value,
+                 ws.cell(row=r, column=sav_col).value)
+                for r in range(2, ws.max_row + 1)]
+        _expect(any(sev == "FAIL" and chk == "orphan_disks" for sev, chk, _ in rows),
+                "rearch should flag the unattached disk as a FAIL: %s" % rows)
+        total = wb["Summary"]
+        labels = {total.cell(row=r, column=1).value: total.cell(row=r, column=2).value
+                  for r in range(2, total.max_row + 1)}
+        _expect(float(labels.get("Total estimated monthly savings (USD)") or 0) > 0,
+                "rearch total estimated savings should be > 0: %s" % labels)
+
+    def chk_rearch_md(md):
+        _expect("Executive summary" in md, "rearch md needs an Executive summary")
+        _expect("### ORPHANED" in md, "rearch md needs the ORPHANED findings section")
+
+    before_re = set(os.listdir(out))
+    run(subscription_rearch, base + ["--subs", "contoso-platform"],
+        ["ReadMe", "Summary", "TopFindings", "CostTrend", "CostByRG", "Findings",
+         "Orphaned", "Compute", "Storage", "StorageDisks", "PaaS&Network",
+         "Advisor", "RawResources", "RawCosts"],
+        [chk_rearch], expect_companions=(".md",))
+    new_re = [f for f in os.listdir(out) if f not in before_re]
+    re_md = os.path.join(out, next(f for f in new_re if f.endswith(".md")))
+    with open(re_md, encoding="utf-8") as f:
+        chk_rearch_md(f.read())
+
+    # exactly-one-subscription guard: --all spans two subs and must exit(2)
+    try:
+        subscription_rearch.main(base + ["--all"])
+        _expect(False, "rearch with multiple subs should exit(2)")
+    except SystemExit as e:
+        _expect(e.code == 2, "rearch multi-sub guard should exit(2), got %s" % e.code)
+
+    golden_path = os.path.join(tmp, "golden.json")
+    with open(golden_path, "w", encoding="utf-8") as f:
+        json.dump({
+            "tags": {"environment": "sandbox"},
+            "cluster": {"kubernetes_version": "1.31", "private_cluster": True,
+                        "disable_local_accounts": True,
+                        "network": {"plugin": "azure"}},
+        }, f)
+
+    def chk_conf(wb):
+        ws = wb["Scorecard"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        plug_col = hdr.index("net_plugin") + 1
+        ver_col = hdr.index("version_minimum") + 1
+        plug = {ws.cell(row=r, column=1).value: ws.cell(row=r, column=plug_col).value
+                for r in range(2, ws.max_row + 1)}
+        ver = {ws.cell(row=r, column=1).value: ws.cell(row=r, column=ver_col).value
+               for r in range(2, ws.max_row + 1)}
+        _expect(plug.get("aks-dev-01") == "FAIL" and plug.get("aks-prod-01") == "PASS",
+                "kubenet cluster should drift from the azure-CNI golden: %s" % plug)
+        _expect(ver.get("aks-dev-01") == "FAIL" and ver.get("aks-dev-02") == "PASS",
+                "1.29 cluster should fail the 1.31 version floor: %s" % ver)
+
+    run(conformance, base + ["--all", "--golden", golden_path],
+        ["ReadMe", "Scorecard", "FailDetails", "FailuresByRule", "RuleLegend"],
+        [chk_conf])
 
     def chk_pol(wb):
         ws = wb["KubernetesBlindSpots"]
@@ -702,7 +1052,7 @@ def main():
                 "optimization report should flag stopped/spot candidates: %s" % vals)
 
     run(optimization_report, base + ["--all", "--days", "3"],
-        ["ReadMe", "ExecutiveSummary", "SavingsCandidates", "ClusterCostUtilization",
+        ["ReadMe", "Summary", "SavingsCandidates", "ClusterCostUtilization",
          "PricingModelSplit", "RawMonthly"],
         [chk_opt])
 
@@ -737,10 +1087,121 @@ def main():
                      "--classification-rules", os.path.join(os.path.dirname(os.path.dirname(__file__)),
                                                             "vulnerability_classification.example.json"),
                      "--offline", "--out", out],
-        ["ReadMe", "CVESummary", "PrismaFindings", "Classification", "Remediation",
+        ["ReadMe", "Summary", "PrismaFindings", "Classification", "Remediation",
          "ByImage", "ByPackage", "ByLayer", "CVEReference", "ClassificationRules",
          "InputColumns"],
         [chk_vuln])
+
+    import container_os_eol
+    import aks_lifecycle
+
+    def eol_fixture(slug, timeout=30):
+        day = dt.timedelta(days=1)
+        return [
+            {"cycle": "9", "latest": "9.9", "lts": slug == "nodejs",
+             "releaseDate": str(TODAY - 400 * day), "support": str(TODAY + 200 * day),
+             "eol": str(TODAY + 400 * day)},
+            {"cycle": "8", "latest": "8.8", "lts": False,
+             "releaseDate": str(TODAY - 700 * day), "support": str(TODAY - 30 * day),
+             "eol": str(TODAY + 60 * day)},
+            {"cycle": "7", "latest": "7.7", "lts": False,
+             "releaseDate": str(TODAY - 900 * day), "support": str(TODAY - 300 * day),
+             "eol": str(TODAY - 30 * day)},
+        ]
+
+    container_os_eol.fetch_product = eol_fixture
+
+    def chk_eol(wb):
+        ws = wb["EolRadar"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        col = hdr.index("status") + 1
+        vals = {ws.cell(row=r, column=col).value for r in range(2, ws.max_row + 1)}
+        _expect({"SUPPORTED", "EOL <90 DAYS", "EOL"} <= vals,
+                "EOL radar should mix supported/eol-soon/eol rows: %s" % vals)
+
+    run(container_os_eol, ["--out", out],
+        ["ReadMe", "Summary", "EolRadar", "OsBaseImages", "LanguageRuntimes",
+         "RawLifecycle"], [chk_eol])
+
+    ga_month = (TODAY - dt.timedelta(days=200)).strftime("%b %Y")
+    eol_month = (TODAY + dt.timedelta(days=300)).strftime("%b %Y")
+    gone_month = (TODAY - dt.timedelta(days=40)).strftime("%b %Y")
+    versions_html = """
+    <h2>AKS Kubernetes release calendar</h2>
+    <table><tr><th>Kubernetes version</th><th>Upstream release</th><th>AKS preview</th>
+    <th>AKS GA</th><th>End of life</th><th>Platform support</th></tr>
+    <tr><td>1.33</td><td>Apr 2025</td><td>May 2025</td><td>%s</td><td>%s</td>
+    <td>Until 1.37 GA</td></tr>
+    <tr><td>1.31</td><td>Aug 2024</td><td>Sep 2024</td><td>Nov 2024</td><td>%s</td>
+    <td>Until 1.35 GA</td></tr></table>
+    <h3>LTS versions</h3>
+    <table><tr><th>Kubernetes version</th><th>Upstream release</th><th>AKS preview</th>
+    <th>AKS GA</th><th>End of life</th><th>LTS End of life</th></tr>
+    <tr><td>1.30</td><td>Apr 2024</td><td>Jun 2024</td><td>Jul 2024</td><td>%s</td>
+    <td>%s</td></tr></table>
+    <h3>Kubernetes 1.33</h3>
+    <table><tr><th>AKS managed add-ons (addon)</th><th>AKS components (ccp)</th>
+    <th>OS components</th><th>Breaking changes from Kubernetes 1.32.0</th></tr>
+    <tr><td>coredns v1.12.1</td><td>cluster-autoscaler v1.33.0</td>
+    <td>Ubuntu 22.04</td><td>calico v3.30 bump</td></tr></table>
+    """ % (ga_month, eol_month, gone_month, gone_month, eol_month)
+    integrations_html = """
+    <h2>Available add-ons</h2>
+    <table><tr><th>Name</th><th>Description</th><th>Articles</th><th>GitHub</th></tr>
+    <tr><td>keda</td><td>Event-driven autoscaling</td>
+    <td><a href="keda-about">KEDA add-on</a></td>
+    <td><a href="https://github.com/kedacore/keda">GitHub</a></td></tr></table>
+    <h2>Open-source and third-party integrations</h2>
+    <table><tr><th>Name</th><th>Description</th><th>More details</th></tr>
+    <tr><td><a href="https://helm.sh">Helm</a></td><td>Packaging tool</td>
+    <td><a href="quickstart-helm">Quickstart</a></td></tr></table>
+    """
+    release_body = """## Release Notes - 2026-01-02
+
+### Announcements
+* Feature X retired on January 1, 2026. Migrate to feature Z.
+* The legacy flag Y has been deprecated and will be removed.
+* [Feature Z](https://learn.microsoft.com/azure/aks/z) is now generally available.
+
+### Features
+* Thing A is now generally available in all regions.
+
+### Preview features
+* Thing B is now in public preview.
+
+### Behavioral changes
+* Default for C changed from off to on.
+
+### Bug fixes
+* Fixed D crashing.
+
+### Component updates
+* Bumped E to v2.0.0.
+"""
+    aks_lifecycle.fetch_html = lambda url, timeout=30: (
+        versions_html if "supported-kubernetes-versions" in url else integrations_html)
+    aks_lifecycle.fetch_releases = lambda count=30, timeout=30: [
+        {"tag_name": "2026-01-02", "published_at": "2026-01-05T00:00:00Z",
+         "body": release_body}]
+
+    def chk_lifecycle(wb):
+        ws = wb["Announcements"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        col = hdr.index("kind") + 1
+        kinds = {ws.cell(row=r, column=col).value for r in range(2, ws.max_row + 1)}
+        _expect({"RETIREMENT", "DEPRECATION", "GA"} <= kinds,
+                "lifecycle report should classify announcements: %s" % kinds)
+        ws = wb["ReleaseCalendar"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        col = hdr.index("status") + 1
+        statuses = {ws.cell(row=r, column=col).value for r in range(2, ws.max_row + 1)}
+        _expect("GA" in statuses and "EOL" in statuses,
+                "release calendar should compute GA and EOL statuses: %s" % statuses)
+
+    run(aks_lifecycle, ["--out", out],
+        ["ReadMe", "Summary", "ReleaseCalendar", "Announcements", "GAFeatures",
+         "PreviewFeatures", "BehaviorChanges", "Addons", "OpenSourceIntegrations",
+         "BreakingChanges", "ComponentUpdates", "RawReleaseNotes"], [chk_lifecycle])
 
     md_path = os.path.join(tmp, "sample.md")
     with open(md_path, "w", encoding="utf-8") as f:

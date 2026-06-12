@@ -98,6 +98,34 @@
         "parameters": {
           "effect": "Audit"
         }
+      },
+      {
+        "name": "allowed-images-sbx",
+        "display_name": "K8s containers only from allowed registries (sandbox test)",
+        "definition_id": "/providers/Microsoft.Authorization/policyDefinitions/febd0533-8e55-448f-b837-bd0e06f16469",
+        "scope": "resource_group",
+        "enforcement_mode": "Default",
+        "parameters": {
+          "effect": "deny",
+          "allowedContainerImagesRegex": "^mcr\\.microsoft\\.com/.+$",
+          "excludedNamespaces": ["kube-system", "gatekeeper-system", "azure-arc", "azure-policy"]
+        }
+      }
+    ]
+  },
+  "k8s_tests": {
+    "namespace": "policy-test",
+    "constraint_wait_seconds": 300,
+    "cases": [
+      {
+        "name": "deny-untrusted-registry",
+        "manifest": "policies/tests/pod-bad-registry.yaml",
+        "expect": "deny"
+      },
+      {
+        "name": "allow-trusted-registry",
+        "manifest": "policies/tests/pod-good-registry.yaml",
+        "expect": "allow"
       }
     ]
   },

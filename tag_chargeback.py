@@ -192,10 +192,12 @@ def main(argv=None):
                     pct_cols=("coverage",), colorscale_cols=("coverage",))
     excel.add_table(wb, "TagValues", value_dist,
                     int_cols=("clusters", "subscriptions"), max_width=70)
-    excel.add_table(wb, "RawTags", raw, max_width=80)
-    excel.add_table(wb, "Summary", summary, max_width=80)
-    excel.add_table(wb, "SummaryBySubscription", by_sub, int_cols=("clusters",))
-    excel.add_table(wb, "SummaryByEnvironment", by_env, int_cols=("clusters",))
+    excel.add_table(wb, "RawTags", raw, max_width=80, section="reference")
+    excel.add_table(wb, "Summary", summary, max_width=80, section="summary")
+    excel.add_table(wb, "SummaryBySubscription", by_sub, int_cols=("clusters",),
+                    section="summary")
+    excel.add_table(wb, "SummaryByEnvironment", by_env, int_cols=("clusters",),
+                    section="summary")
 
     path = excel.save(wb, out_path(args, "aks_tag_chargeback", env_filter))
     log("Report written: %s" % path)

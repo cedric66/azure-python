@@ -1,16 +1,18 @@
-"""Detailed AKS spot cluster configuration and cost report.
+"""AKS spot report: configuration, cost and opportunity in one workbook.
 
-This complements spot_opportunity.py. The opportunity report asks "where might
-spot help?" This report asks "how are spot clusters configured today, what do
-they cost, and what risks are visible from subscription-level data?"
+Answers both spot questions at once: "how are spot clusters configured today,
+what do they cost, and what risks are visible from subscription-level data?"
+and "which user node pools are candidates to move to spot, with an estimated
+saving from the public Azure Retail Prices API?" (formerly spot_opportunity.py).
 
-Tabs: ReadMe, ClusterSpotSummary, SpotNodePools, OnDemandNodePools,
-NodePoolSkuSummary, AutoscalerConfig, SpotAssessment, CostByCluster,
-CostTrend, CostByNodePool, OtherCostItems, CostByMeter, RawResourceCost.
+Tabs: ReadMe, Summary, SpotNodePools, OnDemandNodePools, NodePoolSkuSummary,
+AutoscalerConfig, SpotAssessment, Candidates, CostByCluster, CostTrend,
+CostByNodePool, OtherCostItems, CostByMeter, PriceReference, RawResourceCost.
 
 Usage:
   python spot_cluster_report.py --subs contoso-platform --env dev
   python spot_cluster_report.py --subs contoso-platform --only-spot-clusters
+  python spot_cluster_report.py --nonprod --no-retail-prices
 """
 import datetime as dt
 import re
@@ -19,11 +21,13 @@ from collections import defaultdict
 import pandas as pd
 
 from azrep import excel
+from azrep.armextras import retail_vm_prices
 from azrep.costmgmt import CostClient, default_window, dim_in
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
 from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_scope
 
+HOURS_PER_MONTH = 730
 RG_CHUNK = 30
 PM_ORDER = ["OnDemand", "Spot", "Reservation", "SavingsPlan"]
 VMSS_RE = re.compile(r"/virtualmachinescalesets/aks-(.+?)-\d+-vmss$", re.I)
@@ -516,11 +520,75 @@ def cluster_summary_rows(clusters, pools_by_cluster, split):
     return rows
 
 
+def spot_candidates(pools):
+    """User-mode, Linux, non-spot pools with running nodes: the pools that could
+    move to spot (system pools cannot be spot)."""
+    return [q for q in pools
+            if q["priority"].lower() != "spot"
+            and q["mode"].lower() == "user"
+            and q["os_type"].lower() != "windows"
+            and q["count"] > 0
+            and q["power_state"].lower() != "stopped"]
+
+
+def retail_price_lookup(pools, currency):
+    """Retail on-demand/spot prices for every (region, size) used by candidate
+    and existing spot pools. Public list prices: EA/MCA rates not reflected."""
+    need = sorted({(q["location"], q["vm_size"]) for q in pools if q["vm_size"]})
+    log("Looking up retail prices for %d (region, size) combos..." % len(need))
+    prices = {}
+    for i, (region, size) in enumerate(need, 1):
+        if i % 20 == 0:
+            log("  %d/%d..." % (i, len(need)))
+        prices[(region, size)] = retail_vm_prices(region, size, currency)
+    return prices
+
+
+def candidate_rows(candidates, prices):
+    rows = []
+    for q in candidates:
+        pr = prices.get((q["location"], q["vm_size"])) or {}
+        rows.append({
+            "cluster": q["cluster"], "subscription": q["subscription"],
+            "environment": q["environment"], "location": q["location"],
+            "pool": q["pool"], "vm_size": q["vm_size"], "nodes": q["count"],
+            "autoscaling": q["autoscaling"], "taints": q["taints"],
+            "od_hr": pr.get("od_hr"), "spot_hr": pr.get("spot_hr"),
+        })
+    cand = pd.DataFrame(rows)
+    if not cand.empty:
+        n = len(cand)
+        # nodes=G, od_hr=J, spot_hr=K -> formulas keep the sheet dynamic
+        cand["Spot discount %"] = ["=IF(OR(J%d=\"\",K%d=\"\",J%d=0),\"\",1-K%d/J%d)"
+                                   % (r, r, r, r, r) for r in range(2, n + 2)]
+        cand["Est monthly OD cost"] = ["=IF(J%d=\"\",\"\",G%d*%d*J%d)"
+                                       % (r, r, HOURS_PER_MONTH, r) for r in range(2, n + 2)]
+        cand["Est monthly saving"] = ["=IF(OR(J%d=\"\",K%d=\"\"),\"\",G%d*%d*(J%d-K%d))"
+                                      % (r, r, r, HOURS_PER_MONTH, r, r) for r in range(2, n + 2)]
+    return cand
+
+
+def price_reference_rows(prices):
+    prdf = pd.DataFrame([{"region": r, "vm_size": s,
+                          "od_hr": (p or {}).get("od_hr"),
+                          "spot_hr": (p or {}).get("spot_hr")}
+                         for (r, s), p in sorted(prices.items())])
+    if not prdf.empty:
+        n = len(prdf)
+        prdf["discount %"] = ["=IF(OR(C%d=\"\",D%d=\"\",C%d=0),\"\",1-D%d/C%d)"
+                              % (r, r, r, r, r) for r in range(2, n + 2)]
+    return prdf
+
+
 def main(argv=None):
-    p = base_parser("Detailed AKS spot cluster configuration and cost report")
+    p = base_parser("AKS spot configuration, cost and opportunity report")
     p.add_argument("--months", type=int, default=3, help="full months of cost history")
     p.add_argument("--only-spot-clusters", action="store_true",
                    help="include only clusters that currently have at least one spot node pool")
+    p.add_argument("--currency", default="USD",
+                   help="currency for retail-price candidate screening")
+    p.add_argument("--no-retail-prices", action="store_true",
+                   help="skip the Retail Prices API lookups (empty Candidates/PriceReference)")
     args = p.parse_args(argv)
 
     subs = load_subscriptions(args.csv)
@@ -554,20 +622,32 @@ def main(argv=None):
     pool_cost = pd.DataFrame(nodepool_cost_rows(cost["res"], pools))
     other_cost = pd.DataFrame(other_cost_rows(cost["res"], cost["fees"]))
     meter_cost = pd.DataFrame(meter_cost_rows(cost["meter"]))
+
+    if args.no_retail_prices:
+        candidates, prices = [], {}
+    else:
+        if env_filter is None:
+            log("NOTE: no environment filter chosen - prod pools will appear as spot "
+                "candidates. Spot nodes can be evicted at any time; usually only move non-prod.")
+        candidates = spot_candidates(pools)
+        spot_now = [q for q in pools if q["priority"].lower() == "spot"]
+        prices = retail_price_lookup(candidates + spot_now, args.currency)
+    cand = candidate_rows(candidates, prices)
+    prdf = price_reference_rows(prices)
     raw_res = cost["res"].copy()
     if not raw_res.empty:
         raw_res["resource_category"] = raw_res["ResourceId"].map(resource_category)
         raw_res["resource_name"] = raw_res["ResourceId"].map(resource_name)
 
     wb = excel.new_workbook()
-    excel.add_readme(wb, "AKS Spot Cluster Configuration and Cost Report", [
+    excel.add_readme(wb, "AKS Spot Configuration, Cost and Opportunity Report", [
         "Generated: %s   Scope: %s   Cost window: %s to %s" %
         (dt.datetime.now().strftime("%Y-%m-%d %H:%M"), env_filter or "all",
          cost["from"], cost["to"]),
         "Clusters in scope: %d   Node pools: %d   Cost Management calls: %d" %
         (len(clusters), len(pools), cost["calls"]),
         "",
-        "This report focuses on actual spot configuration: spot pools, regular pools,",
+        "This report covers actual spot configuration: spot pools, regular pools,",
         "autoscaler settings, price caps, eviction policy, zones, VM families, taints,",
         "and cost split between Spot / OnDemand / Reservation / SavingsPlan.",
         "",
@@ -575,10 +655,17 @@ def main(argv=None):
         "resource fee. Pool cost is inferred from VMSS resource ids; disks, public IPs",
         "and other non-VMSS charges are shown in OtherCostItems.",
         "",
+        "Candidates lists user-mode, Linux, non-spot pools with running nodes that could",
+        "move to spot, with savings estimated from PUBLIC retail prices (prices.azure.com):",
+        "  - your EA/MCA negotiated rates and RI/savings-plan coverage are NOT reflected;",
+        "  - spot prices float with capacity; spot nodes can be evicted at any time.",
+        "Treat 'Est monthly saving' as an upper-bound screening number, then validate the",
+        "top candidates against the actual amortized cost in CostByCluster/CostByNodePool.",
+        "",
         "No kubectl access is used, so pod tolerations, priority expander ConfigMaps,",
         "PodDisruptionBudgets and application workload criticality are not visible.",
     ])
-    excel.add_table(wb, "ClusterSpotSummary", summary,
+    excel.add_table(wb, "Summary", summary, section="summary",
                     money_cols=("OnDemand", "Spot", "Reservation", "SavingsPlan",
                                 "Cluster fee", "Total (USD)"),
                     pct_cols=("Spot %",),
@@ -602,6 +689,11 @@ def main(argv=None):
     excel.add_table(wb, "SpotAssessment", assessment,
                     fail_cols=("severity", "result"), fail_values=("HIGH", "FAIL"),
                     warn_values=("WARN",), max_width=100)
+    excel.add_table(wb, "Candidates", cand,
+                    money_cols=("od_hr", "spot_hr", "Est monthly OD cost", "Est monthly saving"),
+                    formats={"od_hr": "#,##0.0000", "spot_hr": "#,##0.0000"},
+                    pct_cols=("Spot discount %",), int_cols=("nodes",),
+                    colorscale_cols=("Spot discount %",))
     excel.add_table(wb, "CostByCluster", split.drop(columns=["cluster_id"]) if not split.empty else split,
                     money_cols=("OnDemand", "Spot", "Reservation", "SavingsPlan",
                                 "Cluster fee", "Total (USD)"),
@@ -616,7 +708,10 @@ def main(argv=None):
                     money_cols=("window_cost",), max_width=90)
     excel.add_table(wb, "CostByMeter", meter_cost,
                     money_cols=("window_cost",), max_width=70)
-    excel.add_table(wb, "RawResourceCost", raw_res,
+    excel.add_table(wb, "PriceReference", prdf, section="reference",
+                    formats={"od_hr": "#,##0.0000", "spot_hr": "#,##0.0000"},
+                    pct_cols=("discount %",))
+    excel.add_table(wb, "RawResourceCost", raw_res, section="reference",
                     money_cols=("Cost", "CostUSD"), max_width=90)
 
     path = excel.save(wb, out_path(args, "aks_spot_clusters", env_filter))

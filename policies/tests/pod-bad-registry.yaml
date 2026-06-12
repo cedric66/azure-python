@@ -1,0 +1,18 @@
+# Violates the "containers should only use allowed images" policy (docker.io registry).
+apiVersion: v1
+kind: Pod
+metadata:
+  name: policy-test-bad-registry
+  labels:
+    app: policy-test
+spec:
+  containers:
+    - name: nginx
+      image: docker.io/library/nginx:latest
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi

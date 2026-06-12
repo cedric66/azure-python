@@ -216,3 +216,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Sandbox cluster kubeconfigs (written next to the sandbox config)
+.kubeconfig-*

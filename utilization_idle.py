@@ -103,7 +103,8 @@ def main(argv=None):
     excel.add_table(wb, "IdleCandidates", idle, fail_cols=("flag",),
                     int_cols=("nodes", "samples"))
     excel.add_table(wb, "Stopped", stopped, int_cols=("nodes",))
-    excel.add_table(wb, "Summary", summary, int_cols=("clusters", "nodes"))
+    excel.add_table(wb, "Summary", summary, int_cols=("clusters", "nodes"),
+                    section="summary")
 
     path = excel.save(wb, out_path(args, "aks_utilization", env_filter))
     log("Report written: %s" % path)

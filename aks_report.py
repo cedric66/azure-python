@@ -29,6 +29,14 @@ REPORTS = [
         "description": "All cluster, node-pool, network, addon, tag and summary details.",
     },
     {
+        "key": "360",
+        "aliases": ("cluster-360", "estate", "all-in-one"),
+        "module": "cluster_360",
+        "title": "Cluster 360",
+        "description": "All clusters from all subscriptions categorized in one workbook: "
+                       "version EOL, governance, cost trend, utilization, health score.",
+    },
+    {
         "key": "cost",
         "aliases": ("fleet-cost", "costs"),
         "module": "fleet_cost",
@@ -47,7 +55,7 @@ REPORTS = [
         "aliases": ("architecture", "topology", "diagram"),
         "module": "architecture_design",
         "title": "Architecture design",
-        "description": "Actual-state AKS/resource-group/subscription design workbook plus Mermaid diagrams.",
+        "description": "Actual-state design workbook plus Mermaid doc and draw.io relationship diagrams.",
     },
     {
         "key": "version",
@@ -58,17 +66,12 @@ REPORTS = [
     },
     {
         "key": "spot",
-        "aliases": ("spot-opportunity",),
-        "module": "spot_opportunity",
-        "title": "Spot opportunity",
-        "description": "Current spot usage and non-prod candidate pools with retail-price savings.",
-    },
-    {
-        "key": "spot-detail",
-        "aliases": ("spot-config", "spot-clusters", "spot-cost"),
+        "aliases": ("spot-opportunity", "spot-detail", "spot-config", "spot-clusters",
+                    "spot-cost"),
         "module": "spot_cluster_report",
-        "title": "Spot cluster detail",
-        "description": "Spot pool config, autoscaler settings, assessment and cost breakup.",
+        "title": "Spot clusters and opportunity",
+        "description": "Spot pool config, autoscaler, assessment, cost breakup and "
+                       "candidate pools with retail-price savings.",
     },
     {
         "key": "spot-design",
@@ -121,6 +124,39 @@ REPORTS = [
         "description": "Cost, utilization, spot/RI/SP and stopped-billing candidates in one workbook.",
     },
     {
+        "key": "container-eol",
+        "aliases": ("image-eol", "os-eol", "runtime-eol", "eol-radar"),
+        "module": "container_os_eol",
+        "title": "Container & OS EOL radar",
+        "description": "endoflife.date lifecycle for Alpine/Debian/UBI base images and "
+                       "Java/Python/Node.js runtimes.",
+    },
+    {
+        "key": "aks-lifecycle",
+        "aliases": ("lifecycle", "aks-releases", "release-notes", "addons"),
+        "module": "aks_lifecycle",
+        "title": "AKS lifecycle & release radar",
+        "description": "AKS release calendar, add-ons, retirements/deprecations, GA and "
+                       "preview features from Microsoft pages.",
+    },
+    {
+        "key": "conformance",
+        "aliases": ("golden", "drift", "baseline"),
+        "module": "conformance",
+        "title": "Golden-config conformance",
+        "description": "Fleet drift against a golden baseline YAML (sandbox config schema); "
+                       "requires --golden <file>.",
+    },
+    {
+        "key": "rearch",
+        "aliases": ("rearchitect", "subres"),
+        "module": "subscription_rearch",
+        "title": "Subscription re-architecture (cost savings)",
+        "description": "One subscription, ALL resources: orphan/idle/redundancy "
+                       "findings, Advisor cost recs, actual-cost evidence and a "
+                       "re-architecture narrative (.md) with savings estimates.",
+    },
+    {
         "key": "vulnerabilities",
         "aliases": ("vuln", "cve", "prisma", "prisma-vuln"),
         "module": "vulnerability_report",
@@ -154,6 +190,11 @@ def print_help():
     print("  uv run python aks_report.py sandbox deploy sandbox.example.yaml --yes --wait")
     print("  uv run python aks_report.py sandbox policy-apply sandbox.example.yaml --yes")
     print("  uv run python aks_report.py sandbox scan sandbox.example.yaml --yes")
+    print("  uv run python aks_report.py sandbox clone --cluster-id <ARM-id> --base sandbox.yaml")
+    print("  uv run python aks_report.py sandbox k8s-test sandbox.yaml --yes")
+    print("  uv run python aks_report.py sandbox impact sandbox.yaml --policy policies/candidate.json --all --yes")
+    print("  uv run python aks_report.py sandbox spot-sim sandbox.yaml --yes")
+    print("  uv run python aks_report.py sandbox upgrade-rehearsal sandbox.yaml --to next --yes")
     print("\nVulnerability workflow:")
     print("  uv run python aks_report.py vulnerabilities --cves cves.txt")
     print("  uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json")

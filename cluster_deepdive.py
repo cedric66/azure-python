@@ -267,7 +267,7 @@ def main(argv=None):
         "SKU changes are inferred from meters/VMSS appearing, disappearing or swinging >50%,",
         "cross-checked against Activity Log writes (90-day retention).",
     ])
-    excel.add_table(wb, "Summary", summary, max_width=110)
+    excel.add_table(wb, "Summary", summary, max_width=110, section="summary")
 
     if not daily.empty:
         ddf = daily.reset_index()

@@ -402,10 +402,10 @@ def main(argv=None):
                     max_width=80)
     excel.add_table(wb, "Issues", issuedf, fail_cols=("severity",),
                     fail_values=("CRITICAL",), warn_values=("WARN",), max_width=100)
-    excel.add_table(wb, "Summary", summary, max_width=60)
-    excel.add_table(wb, "SummaryByModel", model_summary,
+    excel.add_table(wb, "Summary", summary, max_width=60, section="summary")
+    excel.add_table(wb, "SummaryByModel", model_summary, section="summary",
                     int_cols=("clusters", "nodes", "max_nodes"))
-    excel.add_table(wb, "SummaryBySubnetStatus", subnet_summary,
+    excel.add_table(wb, "SummaryBySubnetStatus", subnet_summary, section="summary",
                     int_cols=("subnets", "current_ips", "max_ips"))
 
     path = excel.save(wb, out_path(args, "aks_network_ip_capacity", env_filter))

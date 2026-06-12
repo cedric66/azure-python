@@ -132,9 +132,9 @@ def main(argv=None):
     excel.add_table(wb, "NodeImageAge", img, fail_cols=("status",),
                     fail_values=("STALE",), warn_values=("UNKNOWN",),
                     int_cols=("age_days",), max_width=60)
-    excel.add_table(wb, "SupportedVersions", supdf, max_width=70)
-    excel.add_table(wb, "Summary", summ, int_cols=("clusters",))
-    excel.add_table(wb, "SummaryByEnv", summ_env)
+    excel.add_table(wb, "SupportedVersions", supdf, max_width=70, section="reference")
+    excel.add_table(wb, "Summary", summ, int_cols=("clusters",), section="summary")
+    excel.add_table(wb, "SummaryByEnv", summ_env, section="summary")
 
     path = excel.save(wb, out_path(args, "aks_version_eol", env_filter))
     log("Report written: %s" % path)

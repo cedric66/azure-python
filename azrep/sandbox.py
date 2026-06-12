@@ -25,7 +25,7 @@ def log(msg):
     print(time.strftime("[%H:%M:%S] ") + msg, flush=True)
 
 
-def load_config(path):
+def load_config(path, validate=True):
     p = Path(path)
     if not p.exists():
         sys.exit("Sandbox config not found: %s" % path)
@@ -41,7 +41,8 @@ def load_config(path):
         sys.exit("Sandbox config must be a mapping/object: %s" % path)
     data["_config_path"] = str(p.resolve())
     data["_config_dir"] = str(p.resolve().parent)
-    validate_config(data)
+    if validate:
+        validate_config(data)
     return data
 
 
@@ -151,6 +152,9 @@ def print_plan(cfg):
     print("  uv run python aks_report.py sandbox policy-apply %s --yes" % cfg["_config_path"])
     print("  uv run python aks_report.py sandbox scan %s --yes" % cfg["_config_path"])
     print("  uv run python aks_report.py sandbox report %s" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox kubeconfig %s" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox k8s-test %s --yes" % cfg["_config_path"])
+    print("  uv run python aks_report.py sandbox spot-sim %s --yes" % cfg["_config_path"])
     print("  uv run python aks_report.py sandbox cleanup %s --yes" % cfg["_config_path"])
 
 
@@ -178,6 +182,10 @@ def build_node_pool(pool):
         out["vnetSubnetID"] = pool["vnet_subnet_id"]
     if pool.get("pod_subnet_id"):
         out["podSubnetID"] = pool["pod_subnet_id"]
+    if pool.get("node_taints"):
+        out["nodeTaints"] = [str(t) for t in pool["node_taints"]]
+    if pool.get("node_labels"):
+        out["nodeLabels"] = {str(k): str(v) for k, v in pool["node_labels"].items()}
     if (pool.get("priority") or "").lower() == "spot":
         out["scaleSetPriority"] = "Spot"
         out["scaleSetEvictionPolicy"] = pool.get("eviction_policy", "Delete")
@@ -284,6 +292,19 @@ def wait_for_deployment(session, cfg, deployment):
                 sys.exit("Deployment did not succeed: %s" % state)
             return data
         time.sleep(30)
+
+
+def wait_for_provisioning(session, url, api_version, what="resource", poll_s=30):
+    """Poll any ARM resource's properties.provisioningState until terminal."""
+    while True:
+        data = session.get(url, params={"api-version": api_version})
+        state = (((data or {}).get("properties") or {}).get("provisioningState") or "")
+        log("%s provisioning state: %s" % (what, state or "unknown"))
+        if state.lower() in ("succeeded", "failed", "canceled"):
+            if state.lower() != "succeeded":
+                sys.exit("%s did not provision successfully: %s" % (what, state))
+            return data
+        time.sleep(poll_s)
 
 
 def load_policy_definition(cfg, item):
@@ -481,42 +502,205 @@ def build_parser():
     cleanup.add_argument("--yes", action="store_true", help="Required for Azure delete operations")
     cleanup.add_argument("--keep-policies", action="store_true", help="Do not delete configured policy assignments/definitions")
     cleanup.add_argument("--keep-resource-group", action="store_true", help="Do not delete the sandbox resource group")
+
+    kc = sub.add_parser("kubeconfig", help="Fetch a dedicated kubeconfig for the sandbox cluster.")
+    kc.add_argument("config")
+    kc.add_argument("--force", action="store_true", help="Refetch even if the kubeconfig file exists")
+
+    kr = sub.add_parser("kubectl", help="Run kubectl against the sandbox cluster (raw passthrough).")
+    kr.add_argument("config")
+    kr.add_argument("kargs", nargs=argparse.REMAINDER,
+                    help="kubectl arguments; prefix with -- (e.g. sandbox kubectl cfg.yaml -- get nodes)")
+
+    for cmd, what in (("k8s-apply", "apply"), ("k8s-delete", "delete")):
+        km = sub.add_parser(cmd, help="kubectl %s manifest files on the sandbox cluster." % what)
+        km.add_argument("config")
+        km.add_argument("-f", "--file", dest="files", action="append", required=True,
+                        help="Manifest file (repeatable)")
+        km.add_argument("--namespace", help="Namespace to %s into" % what)
+        km.add_argument("--yes", action="store_true", help="Required for cluster write operations")
+
+    kt = sub.add_parser("k8s-test", help="Run the Gatekeeper admission/audit test cases from the config.")
+    kt.add_argument("config")
+    kt.add_argument("--case", action="append", help="Run only the named case(s)")
+    kt.add_argument("--keep", action="store_true", help="Keep test resources/namespace after the run")
+    kt.add_argument("--xlsx", action="store_true", help="Also write an XLSX results workbook")
+    kt.add_argument("--out", default="reports", help="Output directory for --xlsx")
+    kt.add_argument("--yes", action="store_true", help="Required for cluster write operations")
+
+    cl = sub.add_parser("clone", help="Generate a sandbox config that mirrors a fleet cluster.")
+    cl.add_argument("--cluster-id", required=True, help="Full ARM resource ID of the source cluster")
+    cl.add_argument("--base", help="Existing sandbox config supplying subscription/RG/safety/policies")
+    cl.add_argument("--name", help="Sandbox cluster name (default sbx-<source>, must look sandbox-ish)")
+    cl.add_argument("--out", help="Output YAML path (default <source-cluster>.clone.yaml)")
+    cl.add_argument("--keep-subnets", action="store_true", help="Keep source vnet/pod subnet IDs")
+    cl.add_argument("--keep-sku-tier", action="store_true", help="Keep the source SKU tier (cost!)")
+    cl.add_argument("--keep-counts", action="store_true", help="Keep source node counts (cost!)")
+
+    imp = sub.add_parser("impact", help="Evaluate a candidate policy against every fleet cluster (what-if).")
+    imp.add_argument("config")
+    imp.add_argument("--policy", required=True, help="Candidate policy definition JSON file")
+    imp.add_argument("--name", default="impact-candidate", help="Name for the staged definition/assignment")
+    imp.add_argument("--params", action="append", default=[],
+                     help="Assignment parameter k=v (repeatable; v parsed as JSON when possible)")
+    imp.add_argument("--effect-override", action="store_true",
+                     help="Stage the definition with effect Deny so it registers in fieldRestrictions")
+    imp.add_argument("--keep-assignment", action="store_true",
+                     help="Leave the staged definition/assignment in the sandbox after the sweep")
+    imp.add_argument("--csv", default="subscriptions.csv", help="Fleet subscriptions CSV")
+    imp.add_argument("--all", action="store_true", help="All fleet subscriptions (no prompt)")
+    imp.add_argument("--subs", help="Comma-separated subscription names/ids to include")
+    imp.add_argument("--env", help="Only clusters in this environment")
+    imp.add_argument("--nonprod", action="store_true", help="Only non-prod environments")
+    imp.add_argument("--out", default="reports", help="Output directory for the XLSX report")
+    imp.add_argument("--yes", action="store_true", help="Required: stages policy in the sandbox")
+
+    sp = sub.add_parser("spot-sim", help="Split a sandbox node pool into on-demand + spot and test workloads.")
+    sp.add_argument("config")
+    sp.add_argument("--pool", help="On-demand pool to split (prompted when omitted)")
+    sp.add_argument("--vm-size", help="VM size for the spot pool (default: same as source pool)")
+    sp.add_argument("--spot-share", type=float, default=0.6, help="Target share of capacity on spot (0-1)")
+    sp.add_argument("--scenarios", default="all",
+                    help="Comma-separated scenario ids to run, or 'all' / 'none'")
+    sp.add_argument("--simulate-eviction", action="store_true",
+                    help="Simulate a spot eviction (VMSS simulateEviction) and observe rebalancing")
+    sp.add_argument("--keep", action="store_true", help="Keep descheduler + scenario namespaces")
+    sp.add_argument("--md", action="store_true", help="Write a markdown guide with scenario YAML + results")
+    sp.add_argument("--no-prices", action="store_true", help="Skip retail price lookup")
+    sp.add_argument("--out", default="reports", help="Output directory for the XLSX report")
+    sp.add_argument("--yes", action="store_true", help="Required for Azure write operations")
+
+    up = sub.add_parser("upgrade-rehearsal", help="Upgrade the sandbox cluster hop-by-hop with health gates.")
+    up.add_argument("config")
+    up.add_argument("--to", required=True, help="Target version (1.31 / 1.31.5 / next / latest)")
+    up.add_argument("--manifests", action="append", default=[],
+                    help="Manifest file/glob to scan for deprecated APIs (repeatable)")
+    up.add_argument("--no-kubectl", action="store_true", help="Skip kubectl health gates (ARM only)")
+    up.add_argument("--control-plane-only", action="store_true", help="Do not upgrade node pools")
+    up.add_argument("--force", action="store_true", help="Proceed despite deprecated-API findings")
+    up.add_argument("--out", default="reports", help="Output directory for the XLSX report")
+    up.add_argument("--yes", action="store_true", help="Required for Azure write operations")
     return p
+
+
+def session_for_kubeconfig():
+    """ARM session only when the az CLI is missing (listClusterUserCredential fallback)."""
+    from azrep import kubectl as kctl
+    if kctl.have("az"):
+        return None
+    from azrep.http_client import connect
+    return connect(min_interval=0.1)
+
+
+def cmd_kubeconfig(cfg, args):
+    from azrep import kubectl as kctl
+    path = kctl.fetch_kubeconfig(cfg, session=session_for_kubeconfig(), force=args.force)
+    print(path)
+    print("  export KUBECONFIG=%s" % path)
+
+
+def cmd_kubectl(cfg, args):
+    from azrep import kubectl as kctl
+    kargs = args.kargs[1:] if args.kargs[:1] == ["--"] else args.kargs
+    if not kargs:
+        sys.exit("No kubectl arguments given. Example: sandbox kubectl cfg.yaml -- get nodes")
+    path = kctl.fetch_kubeconfig(cfg, session=session_for_kubeconfig())
+    rc, out, err = kctl.run_kubectl(path, kargs, timeout=600)
+    if out:
+        print(out, end="")
+    if err:
+        print(err, end="", file=sys.stderr)
+    sys.exit(rc)
+
+
+def cmd_k8s_files(session, cfg, args):
+    from azrep import kubectl as kctl
+    path = kctl.fetch_kubeconfig(cfg, session=session)
+    fn = kctl.apply_manifest if args.command == "k8s-apply" else kctl.delete_manifest
+    failed = False
+    for f in args.files:
+        rc, out, err = fn(path, resolve_path(cfg, f), namespace=args.namespace)
+        print((out or err).strip())
+        failed = failed or rc != 0
+    if failed:
+        sys.exit(1)
+
+
+def cmd_deploy(session, cfg, args):
+    result = deploy_cluster(session, cfg, wait=args.wait)
+    if args.with_policies:
+        apply_policies(session, cfg)
+    log("Sandbox deploy submitted for cluster %s." % cfg["cluster"]["name"])
+    return result
+
+
+def cmd_cleanup(session, cfg, args):
+    if not args.keep_policies:
+        delete_policy_artifacts(session, cfg)
+    if not args.keep_resource_group:
+        delete_resource_group(session, cfg)
+    log("Sandbox cleanup submitted.")
+
+
+def cmd_k8s_test(session, cfg, args):
+    from azrep import sandbox_k8s
+    return sandbox_k8s.run(session, cfg, args)
+
+
+def cmd_impact(session, cfg, args):
+    from azrep import sandbox_impact
+    return sandbox_impact.run(session, cfg, args)
+
+
+def cmd_spot_sim(session, cfg, args):
+    from azrep import sandbox_spot
+    return sandbox_spot.run(session, cfg, args)
+
+
+def cmd_upgrade(session, cfg, args):
+    from azrep import sandbox_upgrade
+    return sandbox_upgrade.run(session, cfg, args)
+
+
+GATED_COMMANDS = {
+    "deploy": cmd_deploy,
+    "policy-apply": lambda s, c, a: apply_policies(s, c),
+    "scan": lambda s, c, a: trigger_policy_scan(s, c),
+    "cleanup": cmd_cleanup,
+    "k8s-apply": cmd_k8s_files,
+    "k8s-delete": cmd_k8s_files,
+    "k8s-test": cmd_k8s_test,
+    "impact": cmd_impact,
+    "spot-sim": cmd_spot_sim,
+    "upgrade-rehearsal": cmd_upgrade,
+}
 
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+
+    if args.command == "clone":
+        from azrep import sandbox_clone
+        return sandbox_clone.run(args)
+
     cfg = load_config(args.config)
 
     if args.command == "plan":
         print_plan(cfg)
         return
-
     if args.command == "report":
         return run_policy_report(cfg, args.out)
+    if args.command == "kubeconfig":
+        return cmd_kubeconfig(cfg, args)
+    if args.command == "kubectl":
+        ensure_sandbox_safe(cfg, "kubectl")
+        return cmd_kubectl(cfg, args)
 
     require_yes(args, args.command)
     ensure_sandbox_safe(cfg, args.command)
     from azrep.http_client import connect
     session = connect(min_interval=0.1)
-
-    if args.command == "deploy":
-        result = deploy_cluster(session, cfg, wait=args.wait)
-        if args.with_policies:
-            apply_policies(session, cfg)
-        log("Sandbox deploy submitted for cluster %s." % cfg["cluster"]["name"])
-        return result
-    if args.command == "policy-apply":
-        return apply_policies(session, cfg)
-    if args.command == "scan":
-        return trigger_policy_scan(session, cfg)
-    if args.command == "cleanup":
-        if not args.keep_policies:
-            delete_policy_artifacts(session, cfg)
-        if not args.keep_resource_group:
-            delete_resource_group(session, cfg)
-        log("Sandbox cleanup submitted.")
-        return
+    return GATED_COMMANDS[args.command](session, cfg, args)
 
 
 if __name__ == "__main__":

@@ -182,7 +182,7 @@ def main(argv=None):
                     colorscale_cols=("NonCompliant %",))
     excel.add_table(wb, "NonCompliantDetail", noncomp, fail_cols=("compliance",), max_width=70)
     excel.add_table(wb, "KubernetesBlindSpots", blind, fail_cols=("status",))
-    excel.add_table(wb, "Summary", summary, max_width=60)
+    excel.add_table(wb, "Summary", summary, max_width=60, section="summary")
 
     path = excel.save(wb, out_path(args, "aks_policy", env_filter))
     log("Report written: %s" % path)

@@ -34,6 +34,14 @@ Resources
     autoScalerProfile = properties.autoScalerProfile
 """
 
+# Verbatim resource bodies for policy what-if evaluation (sandbox impact): the
+# projected CLUSTERS_KQL drops fields, which would skew alias matching.
+CLUSTERS_RAW_KQL = """
+Resources
+| where type =~ 'microsoft.containerservice/managedclusters'
+| project id, name, type, location, tags, sku, identity, properties, subscriptionId
+"""
+
 RG_TAGS_KQL = """
 ResourceContainers
 | where type =~ 'microsoft.resources/subscriptions/resourcegroups'

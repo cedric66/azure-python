@@ -6,7 +6,8 @@ API: costs are queried at SUBSCRIPTION scope grouped by node resource group
 
 Tabs: ReadMe, ClusterCosts (per-cluster monthly trend, MoM, spot share, RI/SP
 coverage, cluster fee), PricingModelSplit, TopMovers, MeterChanges (SKU change
-signals fleet-wide), BySubscription, RawMonthly (+ RawDaily with --granularity daily).
+signals fleet-wide), SummaryBySubscription, RawMonthly (+ RawDaily with
+--granularity daily).
 
 Usage:
   python fleet_cost.py                        # interactive scope prompt
@@ -289,7 +290,7 @@ def main(argv=None):
     excel.add_table(wb, "MeterChanges", chg, fail_cols=("status",),
                     fail_values=("REMOVED",), warn_values=("NEW", "GROWN", "SHRUNK"),
                     money_cols=("first_usd", "last_usd"), max_width=70)
-    ws = excel.add_table(wb, "BySubscription", bysub,
+    ws = excel.add_table(wb, "SummaryBySubscription", bysub, section="summary",
                          money_cols=tuple(months) + ("Window total (USD)",))
     total_col = list(bysub.columns).index("Window total (USD)") + 1
     excel.add_bar_chart(ws, "Window amortized cost by subscription",
@@ -297,11 +298,13 @@ def main(argv=None):
                         y_title="USD")
     excel.add_total_row(ws, bysub, list(months) + ["Window total (USD)"],
                         label_col="subscription")
-    excel.add_table(wb, "RawMonthly", raw_m, money_cols=("Amortized (USD)",))
+    excel.add_table(wb, "RawMonthly", raw_m, money_cols=("Amortized (USD)",),
+                    section="reference")
     if args.granularity == "Daily":
         raw_d = pm.groupby(["cluster", "subscription", "Period"])["CostUSD"].sum() \
             .reset_index().rename(columns={"Period": "Date", "CostUSD": "Amortized (USD)"})
-        excel.add_table(wb, "RawDaily", raw_d, money_cols=("Amortized (USD)",))
+        excel.add_table(wb, "RawDaily", raw_d, money_cols=("Amortized (USD)",),
+                        section="reference")
 
     path = excel.save(wb, out_path(args, "aks_fleet_cost", env_filter))
     log("Report written: %s" % path)

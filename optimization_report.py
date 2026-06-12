@@ -3,7 +3,7 @@
 Combines 3-month amortized cluster cost, pricing-model split, current node-pool
 shape, and Azure Monitor platform metrics to rank review candidates.
 
-Tabs: ReadMe, ExecutiveSummary, SavingsCandidates, ClusterCostUtilization,
+Tabs: ReadMe, Summary, SavingsCandidates, ClusterCostUtilization,
 PricingModelSplit, RawMonthly.
 
 Usage:
@@ -368,8 +368,7 @@ def main(argv=None):
         "--spot-savings-pct against on-demand spend. Validate top rows with",
         "cluster_deepdive.py before changing node pools.",
     ])
-    excel.add_table(wb, "ExecutiveSummary", exec_summary,
-                    max_width=90)
+    excel.add_table(wb, "Summary", exec_summary, max_width=90, section="summary")
     ws_cand = excel.add_table(wb, "SavingsCandidates", cand,
                               money_cols=("avg_monthly_cost", "estimated_monthly_saving"),
                               fail_cols=("priority",), fail_values=("HIGH",),
@@ -395,7 +394,7 @@ def main(argv=None):
                     money_cols=tuple([c for c in split.columns
                                       if c not in ("cluster", "subscription",
                                                    "environment", "cluster_id")]))
-    excel.add_table(wb, "RawMonthly", raw,
+    excel.add_table(wb, "RawMonthly", raw, section="reference",
                     money_cols=("Amortized node RG cost", "Cluster fee"))
 
     path = excel.save(wb, out_path(args, "aks_optimization", env_filter))

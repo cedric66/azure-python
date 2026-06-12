@@ -95,7 +95,7 @@ def main(argv=None):
     excel.add_table(wb, "NetworkSecurity", cdf[NETSEC_COLS])
     excel.add_table(wb, "Addons", cdf[ADDON_COLS])
     excel.add_table(wb, "Tags", tdf)
-    excel.add_table(wb, "Summary", summary,
+    excel.add_table(wb, "Summary", summary, section="summary",
                     int_cols=("clusters", "nodes", "spot_nodes"))
 
     path = excel.save(wb, out_path(args, "aks_inventory", env_filter))

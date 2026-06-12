@@ -164,8 +164,9 @@ def main(argv=None):
     excel.add_table(wb, "Scorecard", sc, fail_cols=[cid for cid, _, _ in CHECKS],
                     pct_cols=("Score",), colorscale_cols=())
     excel.add_table(wb, "FailDetails", details, max_width=80)
-    excel.add_table(wb, "FailuresByCheck", by_check, int_cols=("failing_clusters",))
-    excel.add_table(wb, "CheckLegend", legend, max_width=90)
+    excel.add_table(wb, "FailuresByCheck", by_check, int_cols=("failing_clusters",),
+                    section="summary")
+    excel.add_table(wb, "CheckLegend", legend, max_width=90, section="reference")
 
     path = excel.save(wb, out_path(args, "aks_governance", env_filter))
     log("Report written: %s" % path)
