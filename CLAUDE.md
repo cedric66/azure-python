@@ -159,6 +159,10 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   subprocess seam tests monkeypatch.
 - Azure Policy -> Gatekeeper constraint replication takes up to ~15 min; the
   k8s-test harness polls (`constraint_wait_seconds`, default 300).
+- NVD API 2.0 (vulnerability_report): `cveIds` batch param is valid (max 100),
+  but `references` is a LIST of {url, source, tags} — the 1.x
+  `references.referenceData` shape is gone. The online path is mocked in
+  tests/test_vulnerability_report.py (`_fake_requests_get`) with real 2.0 shapes.
 - `rearch` (subscription_rearch) uses the `advisorresources` ARG table (Cost
   category recs carry `properties.extendedProperties.annualSavingsAmount` as a
   STRING - parse defensively, /12 for monthly). It is single-sub: >1 sub in
