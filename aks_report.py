@@ -55,7 +55,8 @@ REPORTS = [
         "aliases": ("architecture", "topology", "diagram"),
         "module": "architecture_design",
         "title": "Architecture design",
-        "description": "Actual-state design workbook plus Mermaid doc and draw.io relationship diagrams.",
+        "description": "Actual-state design workbook plus Mermaid doc, draw.io diagrams "
+                       "and a browser-ready HTML design view.",
     },
     {
         "key": "version",

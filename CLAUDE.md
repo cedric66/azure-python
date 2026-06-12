@@ -81,7 +81,7 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | inventory | fleet_inventory.py | ARG only |
 | cost | fleet_cost.py | Cost Mgmt (sub-scope by node RG) + ARG |
 | deepdive | cluster_deepdive.py | Cost Mgmt + ARG + Monitor + Activity Log (one cluster) |
-| design | architecture_design.py | ARG; also writes .md (Mermaid) + .drawio companions |
+| design | architecture_design.py | ARG; also writes .md (Mermaid) + .drawio + .html (self-contained, no JS) companions |
 | version | version_eol.py | ARG + aks_supported_versions per region |
 | spot | spot_cluster_report.py | Cost Mgmt + ARG + retail prices |
 | spot-design | spot_split_design.py | ARG + retail prices |

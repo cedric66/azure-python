@@ -1,10 +1,12 @@
 """Architecture design snapshot from actual Azure state.
 
-Creates a multi-tab XLSX plus, unless --no-doc is given, two companion files:
-a Markdown design document with Mermaid diagrams and a .drawio diagram file
+Creates a multi-tab XLSX plus, unless --no-doc is given, three companion files:
+a Markdown design document with Mermaid diagrams, a .drawio diagram file
 (openable in draw.io / diagrams.net) with a fleet relationship page and one
-architecture page per cluster. Works with subscription Reader data from
-ARM/Resource Graph only; no kubectl access is required.
+architecture page per cluster, and a self-contained .html design view (pure
+HTML/CSS, no JavaScript) that renders the same topology as nested cards in any
+browser. Works with subscription Reader data from ARM/Resource Graph only; no
+kubectl access is required.
 
 Tabs: ReadMe, Summary, Clusters, NodePools, Network, Subnets, Resources,
 ResourceCounts, Components, Relationships, Diagrams.
@@ -15,6 +17,7 @@ Usage:
   python architecture_design.py --subs contoso-platform --all
 """
 import datetime as dt
+import html
 import os
 import re
 
@@ -627,13 +630,219 @@ def write_design_doc(path, clusters, resources, components, diagrams, scope_labe
     return path
 
 
+# --- HTML design view (no JavaScript; containment shown by nesting,
+# cross-references shown as labeled chips instead of edges) ----------------
+
+HTML_CSS = """
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', system-ui, sans-serif; margin: 0;
+         background: #f4f6f8; color: #1b1f23; }
+  header { background: #0b3a6f; color: #fff; padding: 18px 28px; }
+  header h1 { margin: 0 0 4px; font-size: 22px; }
+  header p { margin: 0; opacity: .85; font-size: 13px; }
+  main { padding: 20px 28px 40px; max-width: 1500px; }
+  h2 { font-size: 17px; border-bottom: 2px solid #c7d4e0; padding-bottom: 6px;
+       margin: 30px 0 14px; }
+  .stats { margin-top: 10px; }
+  .columns { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+  .col { flex: 1 1 420px; min-width: 360px; }
+  .box { border: 1.5px solid #7da4c8; border-radius: 8px; background: #eef5fb;
+         padding: 10px 12px 12px; margin-bottom: 14px; }
+  .box > .box-title { font-weight: 600; font-size: 13px; color: #0b3a6f;
+                      margin-bottom: 8px; }
+  .box.rg { border-style: dashed; border-color: #9aa7b4; background: #f7f9fa; }
+  .box.rg > .box-title { color: #51606e; }
+  .box.vnet { border-color: #7a6bb5; background: #f4f2fb; }
+  .box.vnet > .box-title { color: #4e3f96; }
+  .card { border: 1px solid #c4cfd9; border-left: 4px solid #c4cfd9;
+          border-radius: 6px; background: #fff; padding: 8px 10px;
+          margin: 6px 0; box-shadow: 0 1px 2px rgba(20, 40, 60, .08); }
+  .card .card-title { font-weight: 600; font-size: 13px; }
+  .card .card-meta { font-size: 12px; color: #444e58; margin-top: 2px; }
+  .card.aks { border-left: 4px solid #2272b9; }
+  .card.api { border-left: 4px solid #0e7d6f; }
+  .card.idn { border-left: 4px solid #8a6d1f; }
+  .card.pool { border-left: 4px solid #4d8f3a; }
+  .card.pool.spot { border-left-color: #d97a16; background: #fff9f2; }
+  .card.subnet { border-left: 4px solid #7a6bb5; }
+  .chips { margin-top: 6px; }
+  .chip { display: inline-block; border: 1px solid #b9c6d2; border-radius: 10px;
+          background: #f1f5f8; color: #33414e; font-size: 11px;
+          padding: 1px 8px; margin: 2px 4px 0 0; }
+  .chip.attach { background: #ede9f7; border-color: #c3b8e6; color: #4e3f96; }
+  .chip.use { background: #e8f2e4; border-color: #b5d3a8; color: #2f5b22; }
+  .chip.res { background: #fdf6e7; border-color: #e3cf9e; color: #6b5410; }
+  .chip.stat { background: #ffffff22; border-color: #ffffff55; color: #fff;
+               font-size: 12px; }
+  footer { padding: 0 28px 30px; font-size: 12px; color: #5a6772;
+           max-width: 1500px; }
+"""
+
+
+def _esc(value):
+    return html.escape("" if value is None else str(value))
+
+
+def _chip(text, cls=""):
+    return '<span class="chip%s">%s</span>' % (" " + cls if cls else "", _esc(text))
+
+
+def _card(title, meta_parts, cls, chips=""):
+    meta = " &middot; ".join(_esc(m) for m in meta_parts if str(m or "").strip())
+    return ('<div class="card %s"><div class="card-title">%s</div>'
+            '<div class="card-meta">%s</div>%s</div>'
+            % (cls, _esc(title), meta, chips))
+
+
+def _pool_card(p):
+    spot = str(p.get("priority") or "").lower() == "spot"
+    scale = ("autoscale %s-%s" % (p["min_count"], p["max_count"])
+             if p["autoscaling"] else "fixed")
+    meta = [p["mode"], p["vm_size"], "%s nodes" % p["count"], scale]
+    if p.get("zones"):
+        meta.append("zones %s" % p["zones"])
+    if spot:
+        meta.append("Spot priority")
+    return _card("Pool: %s" % p["pool"], meta, "pool spot" if spot else "pool")
+
+
+def _subnet_usage(pools):
+    """subnet id (lower) -> ['cluster/pool (nodes)', 'cluster/pool (pods)', ...]"""
+    usage = {}
+    for p in pools:
+        for key, label in (("vnet_subnet_id", "nodes"), ("pod_subnet_id", "pods")):
+            sid = str(p.get(key) or "").lower()
+            if sid:
+                usage.setdefault(sid, []).append(
+                    "%s/%s (%s)" % (p["cluster"], p["pool"], label))
+    return usage
+
+
+def _subnet_card(s, usage):
+    chips = []
+    for key, label in (("nsg_id", "NSG"), ("route_table_id", "Route table"),
+                       ("nat_gateway_id", "NAT gateway")):
+        if s.get(key):
+            chips.append(_chip("%s: %s" % (label, _name_from_id(s[key])), "attach"))
+    for u in sorted(set(usage.get(str(s.get("subnet_id") or "").lower(), []))):
+        chips.append(_chip(u, "use"))
+    body = '<div class="chips">%s</div>' % "".join(chips) if chips else ""
+    return _card("Subnet: %s" % s["subnet"], [s["prefixes"], s["location"]],
+                 "subnet", body)
+
+
+def _fleet_overview_html(clusters, pools, subnets):
+    usage = _subnet_usage(pools)
+    by_sub = {}
+    for c in clusters:
+        by_sub.setdefault(c["subscription"], []).append(c)
+    left = []
+    for sub, cls in sorted(by_sub.items()):
+        cards = "".join(_card(
+            "AKS: %s" % c["cluster"],
+            ["Kubernetes %s" % c["kubernetes_version"], c["environment"],
+             c["location"], "%s pools" % c["node_pools"],
+             "%s nodes" % c["total_nodes"]], "aks") for c in cls)
+        left.append('<div class="box"><div class="box-title">Subscription: %s'
+                    '</div>%s</div>' % (_esc(sub), cards))
+
+    by_vnet = {}
+    for s in subnets:
+        by_vnet.setdefault(s["vnet"], []).append(s)
+    right = []
+    for vnet, sns in sorted(by_vnet.items()):
+        cards = "".join(_subnet_card(s, usage) for s in sns)
+        right.append('<div class="box vnet"><div class="box-title">VNet: %s'
+                     '</div>%s</div>' % (_esc(vnet), cards))
+    if not right:
+        right.append("<p>No subnets visible in scope (kubenet clusters without "
+                     "explicit subnet IDs, or networking lives outside the "
+                     "queried resource groups).</p>")
+    return ('<div class="columns"><div class="col">%s</div>'
+            '<div class="col">%s</div></div>' % ("".join(left), "".join(right)))
+
+
+def _cluster_section_html(cluster, pools, resources, subnets):
+    pool_rows, type_counts, subnet_rows = cluster_view(cluster, pools, resources, subnets)
+    usage = _subnet_usage(pool_rows)
+
+    rg_cards = (
+        _card("AKS: %s" % cluster["cluster"],
+              ["Kubernetes %s" % cluster["kubernetes_version"],
+               "Tier %s" % cluster["sku_tier"], cluster["location"],
+               "power=%s" % cluster["power_state"]], "aks") +
+        _card("API server",
+              [cluster["public_fqdn"] or cluster["private_fqdn"] or "(no fqdn)",
+               "private=%s" % _friendly_bool(cluster["private_cluster"]),
+               "authorized ranges=%s" % (cluster["authorized_ip_ranges"] or "none")],
+              "api") +
+        _card("Identity and addons",
+              [cluster["identity_type"],
+               "AAD=%s" % _friendly_bool(cluster["aad_managed"]),
+               "Azure RBAC=%s" % _friendly_bool(cluster["azure_rbac"]),
+               "policy addon=%s" % _friendly_bool(cluster["addon_azure_policy"]),
+               "monitoring=%s" % _friendly_bool(cluster["addon_monitoring"])], "idn"))
+
+    res_chips = "".join(
+        _chip("%s: %d" % (_resource_class(t), n), "res")
+        for t, n in sorted(type_counts.items())
+        if t != "microsoft.containerservice/managedclusters")
+    nrg_inner = "".join(_pool_card(p) for p in pool_rows) + \
+        ('<div class="chips">%s</div>' % res_chips if res_chips else "")
+
+    net = ""
+    if subnet_rows:
+        net = ('<div class="box vnet"><div class="box-title">Referenced subnets'
+               '</div>%s</div>' % "".join(_subnet_card(s, usage) for s in subnet_rows))
+
+    return (
+        '<section><h2>Cluster: %s</h2><div class="columns"><div class="col">'
+        '<div class="box"><div class="box-title">Subscription: %s</div>'
+        '<div class="box rg"><div class="box-title">Resource group: %s</div>%s</div>'
+        '<div class="box rg"><div class="box-title">Node resource group: %s</div>%s'
+        '</div></div></div><div class="col">%s</div></div></section>'
+        % (_esc(cluster["cluster"]), _esc(cluster["subscription"]),
+           _esc(cluster["resource_group"]), rg_cards,
+           _esc(cluster["node_resource_group"] or "(unknown)"), nrg_inner, net))
+
+
+def write_html_doc(path, clusters, pools, resources, subnets, scope_label):
+    stats = "".join(_chip(t, "stat") for t in (
+        "%d clusters" % len(clusters), "%d node pools" % len(pools),
+        "%d Azure resources" % len(resources), "%d subnets" % len(subnets)))
+    parts = [
+        "<!doctype html><html><head><meta charset='utf-8'>",
+        "<title>AKS Architecture Design Snapshot</title>",
+        "<style>%s</style></head><body>" % HTML_CSS,
+        "<header><h1>AKS Architecture Design Snapshot</h1>",
+        "<p>Generated: %s &middot; Scope: %s &middot; Azure ARM/Resource Graph "
+        "state only (no kubectl)</p>" % (
+            dt.datetime.now().strftime("%Y-%m-%d %H:%M"), _esc(scope_label)),
+        '<div class="stats">%s</div></header><main>' % stats,
+        "<section><h2>Fleet relationships</h2>",
+        _fleet_overview_html(clusters, pools, subnets),
+        "</section>",
+    ]
+    parts.extend(_cluster_section_html(c, pools, resources, subnets)
+                 for c in clusters)
+    parts.append(
+        "</main><footer>Load balancers, public IPs, VMSS and disks are inferred "
+        "from the cluster and node resource groups. In-cluster Services, "
+        "Ingresses, namespaces and pods require kubectl access and are outside "
+        "this report.</footer></body></html>")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(parts))
+    return path
+
+
 def build_parser():
     p = base_parser("Architecture design snapshot from actual Azure state")
     p.add_argument("--resource-group", "--rg", dest="resource_group",
                    help="comma-separated resource group names to design directly")
     p.add_argument("--no-doc", action="store_true",
                    help="write only the XLSX workbook; skip the Markdown design "
-                        "document and the .drawio diagram file")
+                        "document, the .drawio diagram file and the .html design view")
     return p
 
 
@@ -712,8 +921,9 @@ def main(argv=None):
         "pods and app topology are not visible from subscription-level Reader.",
         "",
         "Companion files: a Markdown document with Mermaid diagrams (per-cluster",
-        "views plus a fleet relationship chart) and a .drawio file with the same",
-        "topology, editable in draw.io / diagrams.net.",
+        "views plus a fleet relationship chart), a .drawio file with the same",
+        "topology editable in draw.io / diagrams.net, and a self-contained .html",
+        "design view (no JavaScript) that renders in any browser.",
     ])
     excel.add_table(wb, "Summary", summary, section="summary")
     cluster_cols = [
@@ -746,6 +956,9 @@ def main(argv=None):
         drawio_path = os.path.splitext(xlsx_path)[0] + ".drawio"
         drawio.save(build_drawio_pages(clusters, pools, resources, subnets), drawio_path)
         log("draw.io diagram written: %s (open in draw.io / diagrams.net)" % drawio_path)
+        html_path = os.path.splitext(xlsx_path)[0] + ".html"
+        write_html_doc(html_path, clusters, pools, resources, subnets, scope_kind)
+        log("HTML design view written: %s (open in any browser)" % html_path)
 
 
 if __name__ == "__main__":

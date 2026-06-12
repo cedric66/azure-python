@@ -43,7 +43,7 @@ The files below are the modules the launcher calls.
 | Script | What it answers | Data sources |
 |---|---|---|
 | `cluster_deepdive.py` | One cluster: 3-month daily amortized cost trend + chart, actual vs amortized, cost per meter & node pool, spot/RI/SP split, **SKU change detection**, utilization, activity log | Cost Mgmt, ARG, Monitor, Activity Log |
-| `architecture_design.py` | Actual-state design snapshot for one cluster, a resource group, cluster set, or full subscription; XLSX (incl. relationship map) plus Mermaid Markdown doc and editable draw.io diagram | ARG |
+| `architecture_design.py` | Actual-state design snapshot for one cluster, a resource group, cluster set, or full subscription; XLSX (incl. relationship map) plus Mermaid Markdown doc, editable draw.io diagram and self-contained HTML design view | ARG |
 | `cluster_360.py` | `360`: every cluster from every subscription in one categorized workbook - joins inventory, version/EOL status, governance checks, amortized cost trend, utilization and node-image staleness; assigns each cluster a category (UPGRADE NOW, STOPPED BILLING, SECURITY GAP, IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY) and a 0-100 health score, with an ActionItems tab explaining every finding | ARG, AKS locations API, Cost Mgmt, Monitor |
 | `fleet_inventory.py` | Every cluster detail: versions, tiers, node pools, networking, security, addons, tags | Resource Graph only |
 | `fleet_cost.py` | Per-cluster monthly amortized trend, MoM %, spot share, RI/SP coverage, top movers, fleet-wide SKU change signals | Cost Mgmt, ARG |
@@ -704,7 +704,7 @@ kubectl access.
 
 ## Architecture Design Output
 
-The design report creates a workbook and, unless `--no-doc` is supplied, two
+The design report creates a workbook and, unless `--no-doc` is supplied, three
 companion files next to it:
 
 - a Markdown document with Mermaid diagrams: one per-cluster architecture view
@@ -712,7 +712,14 @@ companion files next to it:
   and subnet attachments such as NSGs, route tables and NAT gateways);
 - a `.drawio` file (open in <https://app.diagrams.net> or the draw.io desktop /
   VS Code app) with a "Fleet relationships" page and one editable architecture
-  page per cluster.
+  page per cluster;
+- a self-contained `.html` design view (pure HTML/CSS, no JavaScript or CDN, so
+  it opens in any browser even offline): the fleet overview shows subscription
+  boxes with cluster cards next to VNet boxes whose subnet cards carry
+  attachment chips (NSG/route table/NAT gateway) and "used by" chips
+  (cluster/pool, nodes vs pods); each cluster then gets a section with nested
+  subscription -> resource group boxes holding AKS/API-server/identity cards,
+  node-pool cards (spot pools highlighted) and resource-count chips.
 
 The workbook also has a `Relationships` tab listing every relationship as a
 `source -> relation -> target` row (containment, node pools, subnet usage,

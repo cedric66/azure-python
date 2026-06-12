@@ -807,7 +807,7 @@ def main():
     before_doc = set(os.listdir(out))
     run(architecture_design, base + ["--all", "--cluster", "aks-dev-01"],
         ["ReadMe", "Summary", "Relationships", "Diagrams"],
-        expect_companions=(".md", ".drawio"))
+        expect_companions=(".md", ".drawio", ".html"))
     import xml.etree.ElementTree as ET
     new_doc = [f for f in os.listdir(out) if f not in before_doc]
     md_path = os.path.join(out, next(f for f in new_doc if f.endswith(".md")))
@@ -826,6 +826,15 @@ def main():
             "drawio diagram should contain cluster and subnet nodes")
     _expect(any(c.get("edge") == "1" for c in cells),
             "drawio diagram should contain relationship edges")
+    html_path = os.path.join(out, next(f for f in new_doc if f.endswith(".html")))
+    with open(html_path, encoding="utf-8") as f:
+        html_doc = f.read()
+    _expect("Fleet relationships" in html_doc and "Cluster: aks-dev-01" in html_doc,
+            "HTML design view should have a fleet overview and a cluster section")
+    _expect("AKS: aks-dev-01" in html_doc and 'class="card pool' in html_doc,
+            "HTML design view should render cluster and node-pool cards")
+    _expect("<script" not in html_doc.lower(),
+            "HTML design view must stay JavaScript-free (works offline)")
 
     def chk_sku(wb):
         vals = [wb["SKUChanges"].cell(row=r, column=3).value
