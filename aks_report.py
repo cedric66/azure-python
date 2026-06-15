@@ -104,6 +104,15 @@ REPORTS = [
         "description": "Assignments, compliance, non-compliance and Kubernetes policy blind spots.",
     },
     {
+        "key": "policy-components",
+        "aliases": ("compliance-drill", "components", "noncompliant-components"),
+        "module": "policy_components",
+        "title": "Policy non-compliant components",
+        "description": "Drill one compliance initiative (assignment) -> groups -> policies "
+                       "to the individual non-compliant components (e.g. the failing "
+                       "Kubernetes objects), with resource-level fallback.",
+    },
+    {
         "key": "network",
         "aliases": ("ip", "ip-capacity", "network-ip"),
         "module": "network_ip_capacity",

@@ -136,7 +136,59 @@ resources
 | project id, name, type = tolower(type), resourceGroup, location,
     sku_name = tostring(sku.name),
     sku_tier = tostring(sku.tier),
-    gwType = tostring(properties.gatewayType)
+    gwType = tostring(properties.gatewayType),
+    subnetCount = array_length(properties.subnets)
+"""
+
+# Orphan-detection filters below are adapted from the ARG catalog in
+# dolevshor/azure-orphan-resources (MIT).
+
+APPGW_KQL = """
+resources
+| where type =~ 'microsoft.network/applicationgateways'
+| project id, name, resourceGroup, location,
+    sku_name = tostring(properties.sku.name),
+    sku_tier = tostring(properties.sku.tier),
+    operationalState = tostring(properties.operationalState),
+    backendPools = properties.backendAddressPools
+"""
+
+NSGS_KQL = """
+resources
+| where type =~ 'microsoft.network/networksecuritygroups'
+| where isnull(properties.networkInterfaces) and isnull(properties.subnets)
+| project id, name, resourceGroup, location
+"""
+
+ROUTES_KQL = """
+resources
+| where type =~ 'microsoft.network/routetables'
+| where isnull(properties.subnets) or array_length(properties.subnets) == 0
+| project id, name, resourceGroup, location
+"""
+
+AVSETS_KQL = """
+resources
+| where type =~ 'microsoft.compute/availabilitysets'
+| where isnull(properties.virtualMachines) or array_length(properties.virtualMachines) == 0
+| project id, name, resourceGroup, location
+"""
+
+DNS_ZONES_KQL = """
+resources
+| where type =~ 'microsoft.network/privatednszones'
+| where toint(properties.numberOfVirtualNetworkLinks) == 0
+| project id, name, resourceGroup, location,
+    recordSets = toint(properties.numberOfRecordSets)
+"""
+
+ELASTIC_POOLS_KQL = """
+resources
+| where type =~ 'microsoft.sql/servers/elasticpools'
+| project id, name, resourceGroup, location,
+    sku_name = tostring(sku.name),
+    sku_tier = tostring(sku.tier),
+    sku_capacity = tostring(sku.capacity)
 """
 
 STORAGE_KQL = """
@@ -157,7 +209,8 @@ resources
     sku_name = tostring(sku.name),
     sku_tier = tostring(sku.tier),
     sku_capacity = tostring(sku.capacity),
-    serviceObjective = tostring(properties.currentServiceObjectiveName)
+    serviceObjective = tostring(properties.currentServiceObjectiveName),
+    elasticPoolId = tostring(properties.elasticPoolId)
 """
 
 ADVISOR_KQL = """
@@ -378,6 +431,96 @@ def f_empty_asps(ctx):
     return out
 
 
+def f_empty_appgws(ctx):
+    out = []
+    for g in ctx["appgws"]:
+        targets = 0
+        for pool in g.get("backendPools") or []:
+            props = pool.get("properties") or {}
+            targets += len(props.get("backendAddresses") or [])
+            targets += len(props.get("backendIPConfigurations") or [])
+        if targets:
+            continue
+        c = ctx["cost"].get((g.get("id") or "").lower())
+        out.append(_f("FAIL", g.get("id"), g.get("name"), g.get("resourceGroup"),
+                      "Application Gateway (%s, %s) has no backend targets in any pool" % (
+                          g.get("sku_name") or "", g.get("operationalState") or ""),
+                      c, "Stop or delete the Application Gateway", "low", "med"))
+    return out
+
+
+def f_orphan_natgws(ctx):
+    out = []
+    for g in ctx["gateways"]:
+        if g.get("type") != "microsoft.network/natgateways":
+            continue
+        if (g.get("subnetCount") or 0) > 0:
+            continue
+        c = ctx["cost"].get((g.get("id") or "").lower())
+        out.append(_f("FAIL", g.get("id"), g.get("name"), g.get("resourceGroup"),
+                      "NAT gateway not attached to any subnet - flat hourly cost for nothing",
+                      c, "Delete the idle NAT gateway", "low", "low"))
+    return out
+
+
+def f_empty_elastic_pools(ctx):
+    linked = {(d.get("elasticPoolId") or "").lower() for d in ctx["sql"]}
+    out = []
+    for p in ctx["elastic_pools"]:
+        if (p.get("id") or "").lower() in linked:
+            continue
+        c = ctx["cost"].get((p.get("id") or "").lower())
+        out.append(_f("FAIL", p.get("id"), p.get("name"), p.get("resourceGroup"),
+                      "SQL elastic pool (%s/%s) hosts 0 databases" % (
+                          p.get("sku_tier") or "", p.get("sku_name") or ""),
+                      c, "Delete the empty elastic pool", "low", "low"))
+    return out
+
+
+def f_unlinked_dns(ctx):
+    out = []
+    for z in ctx["dns_zones"]:
+        c = ctx["cost"].get((z.get("id") or "").lower())
+        out.append(_f("WARN", z.get("id"), z.get("name"), z.get("resourceGroup"),
+                      "Private DNS zone (%s record sets) has no VNet links - "
+                      "nothing can resolve it" % (z.get("recordSets") or 0),
+                      c, "Delete the zone or link it to a VNet", "low", "low"))
+    return out
+
+
+def f_orphan_nsgs(ctx):
+    return [_f("INFO", n.get("id"), n.get("name"), n.get("resourceGroup"),
+               "NSG not associated to any NIC or subnet (free, but stale config)",
+               None, "Delete the unused NSG", "low", "low") for n in ctx["nsgs"]]
+
+
+def f_orphan_routes(ctx):
+    return [_f("INFO", r.get("id"), r.get("name"), r.get("resourceGroup"),
+               "Route table not associated to any subnet (free, but stale config)",
+               None, "Delete the unused route table", "low", "low")
+            for r in ctx["routes"]]
+
+
+def f_empty_avsets(ctx):
+    return [_f("INFO", a.get("id"), a.get("name"), a.get("resourceGroup"),
+               "Availability set contains no VMs (free, but signals abandoned workload)",
+               None, "Delete the empty availability set", "low", "low")
+            for a in ctx["avsets"]]
+
+
+def f_empty_rgs(ctx):
+    used = {(r.get("resourceGroup") or "").lower() for r in ctx["resources"]}
+    out = []
+    for rg in sorted(ctx["rg_names"]):
+        if not rg or rg in used:
+            continue
+        rid = "/subscriptions/%s/resourceGroups/%s" % (ctx["sub_id"], rg)
+        out.append(_f("INFO", rid, rg, rg,
+                      "Resource group contains no resources visible to Resource Graph",
+                      None, "Delete the empty resource group", "low", "low"))
+    return out
+
+
 def f_storage_redundancy(ctx):
     out = []
     for s in ctx["storage"]:
@@ -539,6 +682,18 @@ FINDINGS = [
     ("stopped_vms", "ORPHANED", "Stopped-but-not-deallocated VMs", f_stopped_vms),
     ("old_snapshots", "ORPHANED", "Snapshots older than 90 days", f_old_snapshots),
     ("empty_asps", "ORPHANED", "App Service plans with zero apps", f_empty_asps),
+    ("empty_appgws", "ORPHANED", "Application gateways with no backend targets",
+     f_empty_appgws),
+    ("orphan_natgws", "ORPHANED", "NAT gateways not attached to any subnet",
+     f_orphan_natgws),
+    ("empty_elastic_pools", "ORPHANED", "SQL elastic pools with zero databases",
+     f_empty_elastic_pools),
+    ("unlinked_dns", "ORPHANED", "Private DNS zones with no VNet links", f_unlinked_dns),
+    ("orphan_nsgs", "ORPHANED", "NSGs not associated anywhere", f_orphan_nsgs),
+    ("orphan_routes", "ORPHANED", "Route tables not associated to any subnet",
+     f_orphan_routes),
+    ("empty_avsets", "ORPHANED", "Availability sets with no VMs", f_empty_avsets),
+    ("empty_rgs", "ORPHANED", "Empty resource groups", f_empty_rgs),
     ("storage_redundancy", "REDUNDANCY", "Geo-redundant storage in nonprod",
      f_storage_redundancy),
     ("flat_rate", "TIER", "Flat-rate network appliances", f_flat_rate_inventory),
@@ -766,8 +921,9 @@ def write_md(path, sub_name, sub_id, args, ctx, findings, rg_cost, svc_trend,
         f.write("## Suggested target-state moves\n\n")
         moves = []
         if fin_by_cat.get("ORPHANED"):
-            moves.append("Sweep and delete orphaned disks, IPs, NICs, empty load "
-                         "balancers and zero-app plans.")
+            moves.append("Sweep and delete orphaned disks, IPs, NICs, NSGs, route "
+                         "tables, empty load balancers/gateways/pools and zero-app "
+                         "plans.")
         if fin_by_cat.get("REDUNDANCY"):
             moves.append("Drop geo-redundancy (GRS->LRS) on nonprod storage.")
         if any("Application Gateway" in x["evidence"] for x in fin_by_cat.get("CONSOLIDATE", [])):
@@ -803,7 +959,8 @@ def write_md(path, sub_name, sub_id, args, ctx, findings, rg_cost, svc_trend,
 
 CATEGORY_INTRO = {
     "ORPHANED": "Resources that are provisioned and billing but attached to "
-                "nothing - the safest savings to action first.",
+                "nothing - the safest savings to action first. INFO rows are "
+                "free-but-stale clutter (NSGs, route tables, empty RGs).",
     "RIGHTSIZE": "Resources provisioned larger/higher than their workload needs.",
     "TIER": "Flat-rate or premium-tier resources whose tier may exceed the need.",
     "REDUNDANCY": "Geo-redundancy paid for where local redundancy would do.",
@@ -853,6 +1010,12 @@ def main(argv=None):
     snapshots = _q(session, SNAPSHOTS_KQL, sub_id)
     asps = _q(session, ASP_KQL, sub_id)
     gateways = _q(session, GATEWAYS_KQL, sub_id)
+    appgws = _q(session, APPGW_KQL, sub_id)
+    nsgs = _q(session, NSGS_KQL, sub_id)
+    routes = _q(session, ROUTES_KQL, sub_id)
+    avsets = _q(session, AVSETS_KQL, sub_id)
+    dns_zones = _q(session, DNS_ZONES_KQL, sub_id)
+    elastic_pools = _q(session, ELASTIC_POOLS_KQL, sub_id)
     storage = _q(session, STORAGE_KQL, sub_id)
     sql = _q(session, SQL_KQL, sub_id)
     advisor = _q(session, ADVISOR_KQL, sub_id)
@@ -897,7 +1060,10 @@ def main(argv=None):
     ctx = {
         "cost": per_res, "resources": resources, "disks": disks, "pips": pips,
         "nics": nics, "lbs": lbs, "vms": vms, "vmss": vmss, "snapshots": snapshots,
-        "asps": asps, "gateways": gateways, "storage": storage, "sql": sql,
+        "asps": asps, "gateways": gateways, "appgws": appgws, "nsgs": nsgs,
+        "routes": routes, "avsets": avsets, "dns_zones": dns_zones,
+        "elastic_pools": elastic_pools, "rg_names": set(rg_tags), "sub_id": sub_id,
+        "storage": storage, "sql": sql,
         "clusters": clusters, "advisor_cost": [a for a in advisor
                                                if (a.get("category") or "").lower() == "cost"],
         "env_of": env_of, "svc_matrix": svc_matrix,
@@ -956,6 +1122,7 @@ def build_workbook_and_save(args, sub_name, sub_id, ctx, findings, months, svc_d
         "  stopped-not-deallocated = its compute cost (still billing)",
         "  GRS/RAGRS/GZRS -> LRS   = ~50% of the storage account's cost",
         "  empty App Service plan  = full plan cost",
+        "  empty AppGW / NAT gateway / elastic pool / DNS zone = full resource cost",
         "  snapshot                = its actual cost",
         "  nonprod start/stop      = ~65% of compute cost (nights+weekends)",
         "  reservation/savings plan = blank (use Advisor's number where present)",
@@ -1043,7 +1210,9 @@ def build_workbook_and_save(args, sub_name, sub_id, ctx, findings, months, svc_d
 
     # Orphaned (detail)
     orphan_checks = {"orphan_disks", "orphan_pips", "orphan_nics", "empty_lbs",
-                     "stopped_vms", "old_snapshots", "empty_asps"}
+                     "stopped_vms", "old_snapshots", "empty_asps", "empty_appgws",
+                     "orphan_natgws", "empty_elastic_pools", "unlinked_dns",
+                     "orphan_nsgs", "orphan_routes", "empty_avsets", "empty_rgs"}
     odf = fdf[fdf["check"].isin(orphan_checks)] if not fdf.empty else fdf
     excel.add_table(wb, "Orphaned",
                     odf[["severity", "check", "resource_name", "resource_group",

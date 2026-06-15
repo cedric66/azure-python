@@ -89,6 +89,7 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | governance | governance.py | ARG only; CHECKS list of (id, desc, fn(c, pools)->(status, detail)) |
 | conformance | conformance.py | ARG only; rules built from a golden YAML (sandbox config schema, subset) via build_rules(); requires --golden |
 | policy | policy_report.py | Policy/PolicyInsights + ARG |
+| policy-components | policy_components.py | Policy assignments + policySetDefinition + PolicyInsights componentPolicyStates (+ policyStates fallback) + ARG; drills ONE initiative -> groups -> policies -> non-compliant components |
 | network | network_ip_capacity.py | ARG only |
 | tags | tag_chargeback.py | ARG only |
 | optimization | optimization_report.py | Cost Mgmt + ARG + Monitor |
@@ -170,7 +171,28 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   `_rearch_kind`/`_rearch_routes` (NOT by table name, since ALL_RESOURCES shares
   `tolower(type)`+`kind` with architecture_design) and routes its Cost queries by
   `ServiceName` being in the grouping - if you add/rename a rearch ARG query or
-  change its grouping, update those routers in tests/smoke_test.py too.
+  change its grouping, update those routers in tests/smoke_test.py too. Marker
+  ORDER matters: "operationalstate" (APPGW_KQL) must stay ahead of
+  "backendaddresspools" (LBS_KQL) since the app-gateway query projects
+  properties.backendAddressPools as well. The 15 ORPHANED checks' KQL filters
+  are adapted from dolevshor/azure-orphan-resources (MIT); empty-RG detection
+  is computed in Python from RG_TAGS_KQL minus RGs seen in ALL_RESOURCES (no
+  extra query).
+- `policy-components` (policy_components) drills one initiative to its non-compliant
+  COMPONENTS. componentPolicyStates is a SEPARATE data-plane resource with its own
+  api-version `2022-04-01` (policyStates stays `2019-10-01`); component records only
+  exist for resource-provider-mode policies (Kubernetes, Key Vault data plane, ...),
+  so the report falls back to resource-level policyStates for members that emit no
+  components (component_type `(resource)`). Assignment filtering is by
+  PolicyAssignmentId (NOT assignment name) so MG-inherited initiatives resolve in
+  every child sub. Selection is interactive unless `--initiative/--group/--policy`
+  are given; `--all` forces no prompts (smoke runs it that way). The smoke mock
+  does NOT validate api-versions or OData $filter - these only fail on real Azure.
+  IMPORTANT mock-router ordering: PolicyInsights query URLs embed the assignment id
+  in `$filter` (which contains the substring "policyAssignments"), so smoke_test's
+  fake_request routes `componentpolicystates`/`policystates` BEFORE `policyassignments`
+  (and componentpolicystates before policystates). Set-definition fixture (DEF_POD_SEC)
+  carries `policyDefinitionGroups` + `policyDefinitions`; COMPONENTS is keyed by sub.
 
 ## Testing
 

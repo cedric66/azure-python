@@ -306,6 +306,15 @@ RE_PIP_IDLE = _rid("Microsoft.Network/publicIPAddresses", "pip-idle-01", RE_RG_N
 RE_ASP_EMPTY = _rid("Microsoft.Web/serverfarms", "asp-empty-01")
 RE_SA_GRS = _rid("Microsoft.Storage/storageAccounts", "stgrsdev01")
 RE_FW = _rid("Microsoft.Network/azureFirewalls", "fw-dev-01", RE_RG_NET)
+RE_APPGW = _rid("Microsoft.Network/applicationGateways", "agw-empty-01", RE_RG_NET)
+RE_NATGW = _rid("Microsoft.Network/natGateways", "natgw-idle-01", RE_RG_NET)
+RE_NSG = _rid("Microsoft.Network/networkSecurityGroups", "nsg-unused-01", RE_RG_NET)
+RE_ROUTE = _rid("Microsoft.Network/routeTables", "rt-unused-01", RE_RG_NET)
+RE_AVSET = _rid("Microsoft.Compute/availabilitySets", "avset-empty-01")
+RE_DNSZ = _rid("Microsoft.Network/privateDnsZones",
+               "privatelink.database.windows.net", RE_RG_NET)
+RE_POOL = _rid("Microsoft.Sql/servers", "sql-dev-01/elasticPools/pool-empty-01")
+RE_RG_EMPTY = "rg-rearch-empty"
 
 RE_RESOURCES = [
     {"id": RE_VM_RUNNING, "name": "vm-dev-app-01",
@@ -337,6 +346,35 @@ RE_RESOURCES = [
      "type": "microsoft.network/azurefirewalls", "kind": "",
      "resourceGroup": RE_RG_NET, "location": RE_LOC, "subscriptionId": S1,
      "sku_name": "AZFW_VNet", "sku_tier": "Standard", "sku_capacity": "", "tags": {}},
+    {"id": RE_APPGW, "name": "agw-empty-01",
+     "type": "microsoft.network/applicationgateways", "kind": "",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "WAF_v2", "sku_tier": "WAF_v2", "sku_capacity": "", "tags": {}},
+    {"id": RE_NATGW, "name": "natgw-idle-01",
+     "type": "microsoft.network/natgateways", "kind": "",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "Standard", "sku_tier": "", "sku_capacity": "", "tags": {}},
+    {"id": RE_NSG, "name": "nsg-unused-01",
+     "type": "microsoft.network/networksecuritygroups", "kind": "",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "", "sku_tier": "", "sku_capacity": "", "tags": {}},
+    {"id": RE_ROUTE, "name": "rt-unused-01",
+     "type": "microsoft.network/routetables", "kind": "",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "", "sku_tier": "", "sku_capacity": "", "tags": {}},
+    {"id": RE_AVSET, "name": "avset-empty-01",
+     "type": "microsoft.compute/availabilitysets", "kind": "",
+     "resourceGroup": RE_RG_APP, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "Aligned", "sku_tier": "", "sku_capacity": "", "tags": {}},
+    {"id": RE_DNSZ, "name": "privatelink.database.windows.net",
+     "type": "microsoft.network/privatednszones", "kind": "",
+     "resourceGroup": RE_RG_NET, "location": "global", "subscriptionId": S1,
+     "sku_name": "", "sku_tier": "", "sku_capacity": "", "tags": {}},
+    {"id": RE_POOL, "name": "pool-empty-01",
+     "type": "microsoft.sql/servers/elasticpools", "kind": "",
+     "resourceGroup": RE_RG_APP, "location": RE_LOC, "subscriptionId": S1,
+     "sku_name": "StandardPool", "sku_tier": "Standard", "sku_capacity": "100",
+     "tags": {}},
 ]
 
 RE_DISKS = [{"id": RE_DISK_ORPHAN, "name": "disk-orphan-01",
@@ -360,10 +398,37 @@ RE_SNAPSHOTS = []
 RE_ASPS = [{"id": RE_ASP_EMPTY, "name": "asp-empty-01", "resourceGroup": RE_RG_APP,
             "location": RE_LOC, "sku_name": "P1v2", "sku_tier": "PremiumV2",
             "sku_capacity": "1", "numberOfSites": 0}]
-RE_GATEWAYS = [{"id": RE_FW, "name": "fw-dev-01",
-                "type": "microsoft.network/azurefirewalls",
-                "resourceGroup": RE_RG_NET, "location": RE_LOC,
-                "sku_name": "AZFW_VNet", "sku_tier": "Standard", "gwType": ""}]
+RE_GATEWAYS = [
+    {"id": RE_FW, "name": "fw-dev-01",
+     "type": "microsoft.network/azurefirewalls",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC,
+     "sku_name": "AZFW_VNet", "sku_tier": "Standard", "gwType": "",
+     "subnetCount": None},
+    {"id": RE_APPGW, "name": "agw-empty-01",
+     "type": "microsoft.network/applicationgateways",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC,
+     "sku_name": "WAF_v2", "sku_tier": "WAF_v2", "gwType": "", "subnetCount": None},
+    {"id": RE_NATGW, "name": "natgw-idle-01",
+     "type": "microsoft.network/natgateways",
+     "resourceGroup": RE_RG_NET, "location": RE_LOC,
+     "sku_name": "Standard", "sku_tier": "", "gwType": "", "subnetCount": 0},
+]
+RE_APPGWS = [{"id": RE_APPGW, "name": "agw-empty-01", "resourceGroup": RE_RG_NET,
+              "location": RE_LOC, "sku_name": "WAF_v2", "sku_tier": "WAF_v2",
+              "operationalState": "Running",
+              "backendPools": [{"name": "be-pool", "properties": {
+                  "backendAddresses": [], "backendIPConfigurations": []}}]}]
+RE_NSGS = [{"id": RE_NSG, "name": "nsg-unused-01", "resourceGroup": RE_RG_NET,
+            "location": RE_LOC}]
+RE_ROUTES = [{"id": RE_ROUTE, "name": "rt-unused-01", "resourceGroup": RE_RG_NET,
+              "location": RE_LOC}]
+RE_AVSETS = [{"id": RE_AVSET, "name": "avset-empty-01", "resourceGroup": RE_RG_APP,
+              "location": RE_LOC}]
+RE_DNSZONES = [{"id": RE_DNSZ, "name": "privatelink.database.windows.net",
+                "resourceGroup": RE_RG_NET, "location": "global", "recordSets": 3}]
+RE_POOLS = [{"id": RE_POOL, "name": "pool-empty-01", "resourceGroup": RE_RG_APP,
+             "location": RE_LOC, "sku_name": "StandardPool", "sku_tier": "Standard",
+             "sku_capacity": "100"}]
 RE_STORAGE = [{"id": RE_SA_GRS, "name": "stgrsdev01", "resourceGroup": RE_RG_APP,
                "location": RE_LOC, "sku_name": "Standard_GRS", "sku_tier": "Standard",
                "kind": "StorageV2", "accessTier": "Hot"}]
@@ -376,32 +441,43 @@ RE_ADVISOR = [{"id": "/subscriptions/%s/providers/Microsoft.Advisor/recommendati
                "impactedType": "Microsoft.Compute/virtualMachines",
                "annualSavings": "1200", "savingsCurrency": "USD"}]
 RE_RGS = [{"subscriptionId": S1, "name": RE_RG_APP.lower(), "tags": {"env": "dev"}},
-          {"subscriptionId": S1, "name": RE_RG_NET.lower(), "tags": {}}]
+          {"subscriptionId": S1, "name": RE_RG_NET.lower(), "tags": {}},
+          {"subscriptionId": S1, "name": RE_RG_EMPTY, "tags": {}}]
 
 # Per-resource cost rows for the rearch fixture: (resource_id, monthly USD).
 RE_COST = {
     RE_VM_RUNNING: 300.0, RE_VM_STOPPED: 80.0, RE_DISK_ORPHAN: 35.0,
     RE_PIP_IDLE: 4.0, RE_ASP_EMPTY: 120.0, RE_SA_GRS: 60.0, RE_FW: 900.0,
+    RE_APPGW: 180.0, RE_NATGW: 32.0, RE_POOL: 220.0, RE_DNSZ: 0.5,
 }
 RE_SERVICES = {
     RE_VM_RUNNING: "Virtual Machines", RE_VM_STOPPED: "Virtual Machines",
     RE_DISK_ORPHAN: "Storage", RE_PIP_IDLE: "Virtual Network",
     RE_ASP_EMPTY: "Azure App Service", RE_SA_GRS: "Storage",
-    RE_FW: "Azure Firewall",
+    RE_FW: "Azure Firewall", RE_APPGW: "Application Gateway",
+    RE_NATGW: "Virtual Network", RE_POOL: "SQL Database", RE_DNSZ: "Azure DNS",
 }
 
 
 # (query marker -> rearch fixture). Order matters: the ALL_RESOURCES projection
-# is matched last because it shares `tolower(type)` with several others.
+# is matched last because it shares `tolower(type)` with several others, and
+# "operationalstate" (APPGW_KQL) must precede "backendaddresspools" (LBS_KQL)
+# because the app-gateway query projects properties.backendAddressPools too.
 _REARCH_ROUTES = [
     ("advisorresources", lambda: RE_ADVISOR),
     ("diskstate", lambda: RE_DISKS),
     ("ipconfiguration", lambda: RE_PIPS),
     ("isempty(properties.privateendpoint)", lambda: RE_NICS),
+    ("operationalstate", lambda: RE_APPGWS),
     ("backendaddresspools", lambda: RE_LBS),
     ("extend powerstate", lambda: RE_VMS),
     ("snapshots", lambda: RE_SNAPSHOTS),
     ("serverfarms", lambda: RE_ASPS),
+    ("networksecuritygroups", lambda: RE_NSGS),
+    ("routetables", lambda: RE_ROUTES),
+    ("availabilitysets", lambda: RE_AVSETS),
+    ("privatednszones", lambda: RE_DNSZONES),
+    ("servers/elasticpools", lambda: RE_POOLS),
     ("azurefirewalls", lambda: RE_GATEWAYS),
     ("storageaccounts", lambda: RE_STORAGE),
     ("servers/databases", lambda: RE_SQL),
@@ -544,6 +620,10 @@ def _metrics_response(url, params):
 
 DEF_POD_SEC = "/providers/Microsoft.Authorization/policySetDefinitions/a8640138-9b0a-4a28-b8cb-1666c838647d"
 DEF_AUDIT_TLS = "/providers/Microsoft.Authorization/policyDefinitions/abcd1234-0000-0000-0000-000000000001"
+# member policies of the pod-security initiative (used by policy_components drill)
+DEF_NO_PRIV = "/providers/Microsoft.Authorization/policyDefinitions/abcd1234-0000-0000-0000-0000000000a1"
+DEF_RO_FS = "/providers/Microsoft.Authorization/policyDefinitions/abcd1234-0000-0000-0000-0000000000a2"
+DEF_ALLOWED_REG = "/providers/Microsoft.Authorization/policyDefinitions/abcd1234-0000-0000-0000-0000000000a3"
 
 ASSIGNMENTS = {
     S1: [{"id": "/providers/Microsoft.Management/managementGroups/corp/providers/"
@@ -568,21 +648,69 @@ ASSIGNMENTS = {
                          "policyDefinitionId": DEF_POD_SEC}}],
 }
 DEFS = {
-    DEF_POD_SEC.lower(): {"properties": {"displayName": "Kubernetes cluster pod security baseline",
-                                         "metadata": {"category": "Kubernetes"}}},
+    DEF_POD_SEC.lower(): {"properties": {
+        "displayName": "Kubernetes cluster pod security baseline",
+        "metadata": {"category": "Kubernetes"},
+        "policyDefinitionGroups": [
+            {"name": "PodSecurity", "displayName": "Pod Security", "category": "Security"},
+            {"name": "ImageProvenance", "displayName": "Image Provenance",
+             "category": "Supply Chain"}],
+        "policyDefinitions": [
+            {"policyDefinitionReferenceId": "no-privileged", "policyDefinitionId": DEF_NO_PRIV,
+             "groupNames": ["PodSecurity"]},
+            {"policyDefinitionReferenceId": "ro-rootfs", "policyDefinitionId": DEF_RO_FS,
+             "groupNames": ["PodSecurity"]},
+            {"policyDefinitionReferenceId": "allowed-registries",
+             "policyDefinitionId": DEF_ALLOWED_REG, "groupNames": ["ImageProvenance"]}]}},
     DEF_AUDIT_TLS.lower(): {"properties": {"displayName": "Audit HTTPS ingress in AKS",
                                            "metadata": {"category": "Kubernetes"}}},
+    DEF_NO_PRIV.lower(): {"properties": {
+        "displayName": "Kubernetes clusters should not allow privileged containers",
+        "metadata": {"category": "Kubernetes"}}},
+    DEF_RO_FS.lower(): {"properties": {
+        "displayName": "Kubernetes clusters should use a read-only root filesystem",
+        "metadata": {"category": "Kubernetes"}}},
+    DEF_ALLOWED_REG.lower(): {"properties": {
+        "displayName": "Kubernetes clusters should only use allowed container registries",
+        "metadata": {"category": "Kubernetes"}}},
 }
+K8S_BASELINE_ID = ASSIGNMENTS[S1][0]["id"]  # MG-inherited, same id in S1 and S2
 STATES = {
     S1: [{"resourceId": CL1, "policyAssignmentId": ASSIGNMENTS[S1][1]["id"],
           "policyDefinitionId": DEF_AUDIT_TLS, "complianceState": "NonCompliant",
           "policyDefinitionAction": "audit", "policyDefinitionReferenceId": ""},
          {"resourceId": CL2, "policyAssignmentId": ASSIGNMENTS[S1][1]["id"],
           "policyDefinitionId": DEF_AUDIT_TLS, "complianceState": "Compliant",
-          "policyDefinitionAction": "audit", "policyDefinitionReferenceId": ""}],
+          "policyDefinitionAction": "audit", "policyDefinitionReferenceId": ""},
+         # allowed-registries member has no component data -> resource-level fallback
+         {"resourceId": CL1, "policyAssignmentId": K8S_BASELINE_ID,
+          "policyDefinitionId": DEF_ALLOWED_REG, "complianceState": "NonCompliant",
+          "policyDefinitionAction": "audit", "policyDefinitionReferenceId": "allowed-registries"}],
     S2: [{"resourceId": CL3, "policyAssignmentId": ASSIGNMENTS[S2][0]["id"],
           "policyDefinitionId": DEF_POD_SEC, "complianceState": "NonCompliant",
-          "policyDefinitionAction": "deny", "policyDefinitionReferenceId": "podsec-1"}],
+          "policyDefinitionAction": "deny", "policyDefinitionReferenceId": "podsec-1"},
+         {"resourceId": CL3, "policyAssignmentId": K8S_BASELINE_ID,
+          "policyDefinitionId": DEF_ALLOWED_REG, "complianceState": "NonCompliant",
+          "policyDefinitionAction": "audit", "policyDefinitionReferenceId": "allowed-registries"}],
+}
+
+# componentPolicyStates: granular non-compliant components (e.g. Kubernetes pods)
+# for the pod-security initiative. Keyed by subscription (read from the URL).
+def _comp(rid, ref, def_id, ctype, cname):
+    return {"resourceId": rid, "policyAssignmentId": K8S_BASELINE_ID,
+            "policyDefinitionReferenceId": ref, "policyDefinitionId": def_id,
+            "complianceState": "NonCompliant", "componentType": ctype,
+            "componentId": "%s/%s" % (ctype, cname), "componentName": cname,
+            "timestamp": "2026-06-14T00:00:00Z"}
+
+
+COMPONENTS = {
+    S1: [_comp(CL1, "no-privileged", DEF_NO_PRIV,
+               "Microsoft.Kubernetes.Data/pods", "default/web-0")],
+    S2: [_comp(CL3, "no-privileged", DEF_NO_PRIV,
+               "Microsoft.Kubernetes.Data/pods", "default/nginx"),
+         _comp(CL3, "no-privileged", DEF_NO_PRIV,
+               "Microsoft.Kubernetes.Data/pods", "payments/api")],
 }
 
 VERSIONS = {"values": [
@@ -633,7 +761,7 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
         elif "microsoft.network/virtualnetworks" in q:
             data = SUBNETS
         elif "subscriptions/resourcegroups" in q:
-            data = RGS
+            data = RGS + RE_RGS
         else:
             data = SUBNAMES
         subs = [s.lower() for s in payload["subscriptions"]]
@@ -647,12 +775,17 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
         return ACTIVITY
     if "kubernetesversions" in low:
         return VERSIONS
-    if "policyassignments" in low:
+    # PolicyInsights queries carry the assignment id in $filter (which contains
+    # "policyAssignments"), so route component/state queries BEFORE assignments.
+    if "componentpolicystates" in low:  # must precede the policystates check
         sub = low.split("/subscriptions/")[1].split("/")[0]
-        return {"value": ASSIGNMENTS.get(sub, [])}
+        return {"value": COMPONENTS.get(sub, [])}
     if "policystates" in low:
         sub = low.split("/subscriptions/")[1].split("/")[0]
         return {"value": STATES.get(sub, [])}
+    if "policyassignments" in low:
+        sub = low.split("/subscriptions/")[1].split("/")[0]
+        return {"value": ASSIGNMENTS.get(sub, [])}
     if "policysetdefinitions" in low or "policydefinitions" in low:
         for k, v in DEFS.items():
             if k in low:
@@ -726,6 +859,7 @@ def main():
     import network_ip_capacity
     import optimization_report
     import policy_report
+    import policy_components
     import spot_cluster_report
     import subscription_rearch
     import tag_chargeback
@@ -742,7 +876,7 @@ def main():
     for mod in (architecture_design, cluster_360, cluster_deepdive, conformance,
                 fleet_cost, fleet_inventory, governance,
                 network_ip_capacity, optimization_report, policy_report,
-                spot_cluster_report, subscription_rearch, tag_chargeback,
+                policy_components, spot_cluster_report, subscription_rearch, tag_chargeback,
                 utilization_idle, version_eol):
         mod.connect = fake_connect
 
@@ -954,13 +1088,31 @@ def main():
         hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
         sev_col = hdr.index("severity") + 1
         chk_col = hdr.index("check") + 1
+        name_col = hdr.index("resource_name") + 1
         sav_col = hdr.index("Est saving (USD)") + 1
         rows = [(ws.cell(row=r, column=sev_col).value,
                  ws.cell(row=r, column=chk_col).value,
+                 ws.cell(row=r, column=name_col).value,
                  ws.cell(row=r, column=sav_col).value)
                 for r in range(2, ws.max_row + 1)]
-        _expect(any(sev == "FAIL" and chk == "orphan_disks" for sev, chk, _ in rows),
+        _expect(any(sev == "FAIL" and chk == "orphan_disks" for sev, chk, _, _ in rows),
                 "rearch should flag the unattached disk as a FAIL: %s" % rows)
+        _expect(any(sev == "FAIL" and chk == "empty_appgws" and sav == 180.0
+                    for sev, chk, _, sav in rows),
+                "rearch should FAIL the no-backend AppGW with its cost: %s" % rows)
+        _expect(any(sev == "FAIL" and chk == "orphan_natgws" for sev, chk, _, _ in rows),
+                "rearch should FAIL the subnet-less NAT gateway: %s" % rows)
+        _expect(any(sev == "FAIL" and chk == "empty_elastic_pools"
+                    for sev, chk, _, _ in rows),
+                "rearch should FAIL the database-less elastic pool: %s" % rows)
+        _expect(any(chk == "unlinked_dns" for _, chk, _, _ in rows),
+                "rearch should flag the VNet-link-less private DNS zone: %s" % rows)
+        _expect(any(chk == "empty_rgs" and name == RE_RG_EMPTY
+                    for _, chk, name, _ in rows),
+                "rearch should flag %s as an empty resource group: %s" % (RE_RG_EMPTY, rows))
+        for hygiene in ("orphan_nsgs", "orphan_routes", "empty_avsets"):
+            _expect(any(sev == "INFO" and chk == hygiene for sev, chk, _, _ in rows),
+                    "rearch should INFO-flag %s: %s" % (hygiene, rows))
         total = wb["Summary"]
         labels = {total.cell(row=r, column=1).value: total.cell(row=r, column=2).value
                   for r in range(2, total.max_row + 1)}
@@ -1029,6 +1181,43 @@ def main():
         ["ReadMe", "Assignments", "ClusterCompliance", "NonCompliantDetail",
          "KubernetesBlindSpots", "Summary"],
         [chk_pol])
+
+    def chk_components(wb):
+        ws = wb["NonCompliantComponents"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        cn = hdr.index("component_name") + 1
+        ct = hdr.index("component_type") + 1
+        grp = hdr.index("group") + 1
+        names = {ws.cell(row=r, column=cn).value for r in range(2, ws.max_row + 1)}
+        ctypes = {ws.cell(row=r, column=ct).value for r in range(2, ws.max_row + 1)}
+        groups = {ws.cell(row=r, column=grp).value for r in range(2, ws.max_row + 1)}
+        _expect("default/nginx" in names and "payments/api" in names,
+                "drill should list the failing Kubernetes pod components: %s" % names)
+        _expect("(resource)" in ctypes,
+                "policy with no components should fall back to a resource row: %s" % ctypes)
+        _expect({"Pod Security", "Image Provenance"} <= groups,
+                "components should be grouped by the initiative controls: %s" % groups)
+        comp_rows = sum(1 for r in range(2, ws.max_row + 1)
+                        if ws.cell(row=r, column=ct).value != "(resource)")
+        _expect(comp_rows >= 3, "expected >=3 component rows (CL1 + 2x CL3): %d" % comp_rows)
+
+    run(policy_components, base + ["--all", "--initiative", "pod security baseline"],
+        ["ReadMe", "Summary", "SummaryByGroup", "SummaryByPolicy",
+         "NonCompliantComponents", "Selection"],
+        [chk_components])
+
+    def chk_group_filter(wb):
+        ws = wb["NonCompliantComponents"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        grp = hdr.index("group") + 1
+        groups = {ws.cell(row=r, column=grp).value for r in range(2, ws.max_row + 1)}
+        _expect(groups == {"Pod Security"},
+                "--group PodSecurity should keep only Pod Security components: %s" % groups)
+
+    run(aks_report, ["policy-components"] + base + ["--all", "--initiative", "pod security",
+                     "--group", "PodSecurity"],
+        ["ReadMe", "Summary", "NonCompliantComponents", "Selection"],
+        [chk_group_filter])
 
     def chk_network(wb):
         ws = wb["SubnetCapacity"]

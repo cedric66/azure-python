@@ -56,10 +56,11 @@ The files below are the modules the launcher calls.
 | `governance.py` | 17-check hygiene scorecard (private API, local accounts, kubenet, zones, autoscaler, tiers, ...) | Resource Graph only |
 | `conformance.py` | `conformance`: fleet drift against a golden baseline YAML (same schema as the sandbox config; every key you set becomes a rule) - per-cluster scorecard, fail details, failures by rule | Resource Graph only |
 | `policy_report.py` | Policy assignments incl. inherited, compliance per cluster, Kubernetes-policy **blind spots** (k8s policies assigned but addon off) | Policy/PolicyInsights, ARG |
+| `policy_components.py` | `policy-components`: drill ONE compliance initiative (assignment) -> groups -> member policies to the individual **non-compliant components** (e.g. the failing Kubernetes namespace/kind/name), with resource-level fallback for policies that have no components; interactive selection or `--initiative/--group/--policy` flags (`--list` to discover) | Policy/PolicyInsights componentPolicyStates + policyStates, ARG |
 | `network_ip_capacity.py` | Network model, API exposure, subnet IP pressure, Azure CNI pod IP demand, subnet NSG/route/NAT metadata | Resource Graph only |
 | `tag_chargeback.py` | Required tag coverage, owner/cost-center/application gaps, tag value normalization, chargeback readiness | Resource Graph only |
 | `optimization_report.py` | Prioritized cost-optimization queue combining amortized cost, utilization, spot/RI/SP signals, stopped-billing candidates | Cost Mgmt, ARG, Monitor |
-| `subscription_rearch.py` | `rearch`: ONE subscription, ALL resources (not just AKS) - orphan/idle disks, public IPs, NICs, empty load balancers, stopped-not-deallocated VMs, stale snapshots, empty App Service plans, geo-redundant nonprod storage, flat-rate firewalls/gateways, premium SQL, plus Azure Advisor cost recs; findings carry actual last-month cost and an estimated monthly saving, and a companion `.md` narrative (current-state per RG + Mermaid, findings by category, target-state moves) drives a re-architecture-for-cost-savings exercise | Resource Graph, Cost Mgmt, Azure Advisor, Retail Prices API |
+| `subscription_rearch.py` | `rearch`: ONE subscription, ALL resources (not just AKS) - orphan/idle disks, public IPs, NICs, empty load balancers, stopped-not-deallocated VMs, stale snapshots, empty App Service plans, app gateways with no backend targets, subnet-less NAT gateways, database-less SQL elastic pools, VNet-link-less private DNS zones, unassociated NSGs/route tables, empty availability sets and resource groups (orphan filters adapted from the MIT `dolevshor/azure-orphan-resources` ARG catalog), geo-redundant nonprod storage, flat-rate firewalls/gateways, premium SQL, plus Azure Advisor cost recs; findings carry actual last-month cost and an estimated monthly saving, and a companion `.md` narrative (current-state per RG + Mermaid, findings by category, target-state moves) drives a re-architecture-for-cost-savings exercise | Resource Graph, Cost Mgmt, Azure Advisor, Retail Prices API |
 | `vulnerability_report.py` | Prisma XLSX/CVE-list enrichment and base-image/application/platform classification with remediation guidance | Prisma XLSX, classification rules, NVD/CISA KEV/EPSS |
 
 ## Setup (Local Linux)
@@ -255,6 +256,18 @@ uv run python aks_report.py policy --all
 That report will show policy assignments and compliance across all included
 subscriptions in `subscriptions.csv`, including the same policy after it has
 been assigned outside the sandbox.
+
+To drill a single compliance initiative down to the individual non-compliant
+components (the failing Kubernetes objects, etc.):
+
+```bash
+uv run python aks_report.py policy-components --all --list             # discover initiatives
+uv run python aks_report.py policy-components --all --initiative "pod security baseline"
+uv run python aks_report.py policy-components --env dev --initiative NIST --group AC-6 --policy privileged
+```
+
+Run with no `--initiative` on a terminal to be prompted for the compliance name,
+then the groups, then the policies; `--all` (or passing the flags) runs unattended.
 
 ### kubectl in the sandbox
 
