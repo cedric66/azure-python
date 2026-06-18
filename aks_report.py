@@ -88,8 +88,8 @@ REPORTS = [
         "aliases": ("spot-trend", "spot-roi", "spot-after"),
         "module": "spot_savings",
         "title": "Spot savings after adoption",
-        "description": "Day-by-day cost after first observed Spot spend, with "
-                       "last-30-day retail counterfactual savings and total-cost context.",
+        "description": "Before/after/projection tables after first observed Spot spend, "
+                       "with actual-vs-projection chart and retail counterfactual savings.",
     },
     {
         "key": "utilization",

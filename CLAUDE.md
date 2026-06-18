@@ -151,6 +151,9 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   this is cost-observed adoption, not an ARM creation timestamp. The headline
   savings verdict is a retail-rate counterfactual for actual Spot VMSS spend;
   whole-cluster before/after total cost is contextual and workload-confounded.
+  Its first summary tabs are `BeforeSpot`, `AfterSpot`, `SavingsProjection`
+  and `ActualVsProjection`; current node counts are current ARG facts only,
+  while `avg_node_equiv_at_retail` is an explicitly labeled cost/rate estimate.
 - Control-plane-only AKS upgrade = PUT the managed cluster WITHOUT
   `properties.agentPoolProfiles`; pools upgrade individually via agentPool
   `orchestratorVersion`. One minor hop at a time.

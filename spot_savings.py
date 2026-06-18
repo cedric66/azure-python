@@ -3,13 +3,15 @@
 This report answers: "after a cluster added spot node pools, did it actually
 save money?" It uses subscription-scope Cost Management queries only.
 
-Tabs: ReadMe, SpotSavingsSummary, FleetDailyTrend, SpotSavingsDaily,
-SpotSavingsByPool, PriceReference, RawDailyCost.
+Tabs: ReadMe, BeforeSpot, AfterSpot, SavingsProjection, ActualVsProjection,
+SpotSavingsSummary, FleetDailyTrend, SpotSavingsDaily, SpotSavingsByPool,
+PriceReference, RawDailyCost.
 
 Usage:
   python spot_savings.py --all
   python spot_savings.py --env dev --spot-trend-days 30 --spot-baseline-days 30
   python spot_savings.py --cluster aks-dev-01 --lookback-days 120
+  python spot_savings.py --cluster aks-dev-01 --project-move-od-nodes 3
 """
 import datetime as dt
 from collections import defaultdict
@@ -297,6 +299,7 @@ def annotate_daily_and_summary(daily, estimates, clusters, pools, trend_days=30,
             note.append("whole-cluster total delta is contextual and may include workload/capacity changes")
 
         summaries.append({
+            "cluster_id": c["id"],
             "cluster": c["cluster"],
             "subscription": c["subscription"],
             "environment": c["environment"],
@@ -411,6 +414,377 @@ def pool_savings_rows(estimates, trend_days):
         "estimated_spot_saving", ascending=False, na_position="last")
 
 
+def spot_windows(daily, trend_days, baseline_days, spot_threshold):
+    if daily.empty:
+        return {}
+    out = {}
+    max_date = parse_date(daily["Date"].max())
+    trend_start = max_date - dt.timedelta(days=trend_days - 1)
+    for cid, df in daily.groupby("cluster_id", dropna=False):
+        d = df.copy()
+        d["_date"] = d["Date"].map(parse_date)
+        spot_dates = d.loc[d["Spot"] > spot_threshold, "_date"]
+        first_spot = spot_dates.min() if not spot_dates.empty else None
+        if first_spot:
+            before_start = first_spot - dt.timedelta(days=baseline_days)
+            before_end = first_spot - dt.timedelta(days=1)
+            after_start = max(first_spot, trend_start)
+            after_end = max_date
+        else:
+            before_start = before_end = after_start = after_end = None
+        out[cid] = {
+            "first_spot": first_spot,
+            "before_start": before_start,
+            "before_end": before_end,
+            "after_start": after_start,
+            "after_end": after_end,
+            "max_date": max_date,
+        }
+    return out
+
+
+def _pool_lookup(pools):
+    return {(p["cluster_id"], p["pool"]): p for p in pools}
+
+
+def _pool_price(prices, location, vm_size):
+    return prices.get((location, vm_size)) if prices else None
+
+
+def enrich_vmss_cost(res, pools, prices):
+    cols = ["cluster_id", "cluster", "subscription", "environment", "location", "Date",
+            "pool", "vm_size", "node_type_mode", "current_priority",
+            "current_nodes_now", "ResourceId", "billing_type", "CostUSD",
+            "od_hr", "spot_hr", "node_equiv_hours_at_retail", "node_equiv_source"]
+    if res.empty:
+        return pd.DataFrame(columns=cols)
+    cfg = _pool_lookup(pools)
+    rows = []
+    r = res.copy()
+    r["pool"] = r["ResourceId"].map(pool_from_resource_id)
+    r = r[r["pool"] != ""]
+    for q in r.itertuples(index=False):
+        p = cfg.get((q.cluster_id, q.pool), {})
+        vm_size = p.get("vm_size") or ""
+        pr = _pool_price(prices, q.location, vm_size) or {}
+        billing = str(q.PricingModel or "")
+        low = billing.lower()
+        hourly = None
+        source = "unavailable"
+        if low == "spot" and pr.get("spot_hr"):
+            hourly = float(pr["spot_hr"])
+            source = "spot_retail_rate"
+        elif low == "ondemand" and pr.get("od_hr"):
+            hourly = float(pr["od_hr"])
+            source = "od_retail_rate"
+        node_hours = float(q.CostUSD) / hourly if hourly else None
+        rows.append({
+            "cluster_id": q.cluster_id,
+            "cluster": q.cluster,
+            "subscription": q.subscription,
+            "environment": q.environment,
+            "location": q.location,
+            "Date": q.Date,
+            "pool": q.pool,
+            "vm_size": vm_size or "(historical/unknown)",
+            "node_type_mode": p.get("mode") or "(current mode unknown)",
+            "current_priority": p.get("priority") or "(current priority unknown)",
+            "current_nodes_now": p.get("count"),
+            "ResourceId": q.ResourceId,
+            "billing_type": billing,
+            "CostUSD": float(q.CostUSD),
+            "od_hr": pr.get("od_hr"),
+            "spot_hr": pr.get("spot_hr"),
+            "node_equiv_hours_at_retail": node_hours,
+            "node_equiv_source": source,
+        })
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _period_mask(df, start, end):
+    if start is None or end is None or df.empty:
+        return pd.Series([False] * len(df), index=df.index)
+    dates = df["Date"].map(parse_date)
+    return (dates >= start) & (dates <= end)
+
+
+def _window_total_row(cluster, window, daily, pools):
+    if daily.empty:
+        compute = fee = total = 0.0
+    else:
+        compute = float(daily["Compute total (USD)"].sum())
+        fee = float(daily["Cluster fee"].sum())
+        total = float(daily["Total (USD)"].sum())
+    current_nodes = sum(int(p.get("count") or 0)
+                        for p in pools if p["cluster_id"] == cluster["id"])
+    return {
+        "cluster": cluster["cluster"],
+        "subscription": cluster["subscription"],
+        "environment": cluster["environment"],
+        "location": cluster["location"],
+        "window_start": window["start"].strftime("%Y-%m-%d") if window["start"] else "",
+        "window_end": window["end"].strftime("%Y-%m-%d") if window["end"] else "",
+        "days_used": window["days"],
+        "row_type": "cluster_total",
+        "pool": "(cluster total)",
+        "vm_size": "all",
+        "node_type_mode": "all",
+        "current_priority": "all",
+        "billing_type": "All",
+        "current_nodes_now": current_nodes,
+        "avg_node_equiv_at_retail": None,
+        "node_count_source": "current_arg_current_state",
+        "actual_vmss_cost_usd": compute,
+        "cluster_fee_usd": fee,
+        "end_to_end_cost_usd": total,
+        "node_count_note": "Current node count only; historical inventory is not available from ARG.",
+    }
+
+
+def period_cost_table(daily, vmss, clusters, pools, windows, phase):
+    cols = ["cluster", "subscription", "environment", "location", "window_start",
+            "window_end", "days_used", "row_type", "pool", "vm_size",
+            "node_type_mode", "current_priority", "billing_type",
+            "current_nodes_now", "avg_node_equiv_at_retail", "node_count_source",
+            "actual_vmss_cost_usd", "cluster_fee_usd", "end_to_end_cost_usd",
+            "node_count_note"]
+    rows = []
+    by_cluster = {c["id"]: c for c in clusters}
+    for cid, c in by_cluster.items():
+        w = windows.get(cid) or {}
+        if phase == "before":
+            start, end = w.get("before_start"), w.get("before_end")
+        else:
+            start, end = w.get("after_start"), w.get("after_end")
+        if not start or not end:
+            continue
+        d = daily[(daily["cluster_id"] == cid) & _period_mask(daily, start, end)]
+        v = vmss[(vmss["cluster_id"] == cid) & _period_mask(vmss, start, end)]
+        window = {"start": start, "end": end, "days": len(set(d["Date"]))}
+        if window["days"] <= 0:
+            continue
+        for keys, grp in v.groupby(["pool", "vm_size", "node_type_mode", "current_priority",
+                                    "billing_type"], dropna=False):
+            current_nodes = next((x for x in grp["current_nodes_now"] if pd.notna(x)), None)
+            node_hours = grp["node_equiv_hours_at_retail"].dropna()
+            avg_equiv = float(node_hours.sum()) / (24.0 * window["days"]) \
+                if len(node_hours) else None
+            if pd.notna(current_nodes):
+                source = "current_arg_current_state"
+            elif avg_equiv is not None:
+                source = "retail_cost_node_equiv"
+            else:
+                source = "unavailable"
+            rows.append({
+                "cluster": c["cluster"],
+                "subscription": c["subscription"],
+                "environment": c["environment"],
+                "location": c["location"],
+                "window_start": start.strftime("%Y-%m-%d"),
+                "window_end": end.strftime("%Y-%m-%d"),
+                "days_used": window["days"],
+                "row_type": "node_pool",
+                "pool": keys[0],
+                "vm_size": keys[1],
+                "node_type_mode": keys[2],
+                "current_priority": keys[3],
+                "billing_type": keys[4],
+                "current_nodes_now": int(current_nodes) if pd.notna(current_nodes) else None,
+                "avg_node_equiv_at_retail": round(avg_equiv, 1) if avg_equiv is not None else None,
+                "node_count_source": source,
+                "actual_vmss_cost_usd": float(grp["CostUSD"].sum()),
+                "cluster_fee_usd": None,
+                "end_to_end_cost_usd": None,
+                "node_count_note": (
+                    "current_nodes_now is current ARG state, not historical; "
+                    "avg_node_equiv_at_retail is a cost/rate estimate only."
+                ),
+            })
+        rows.append(_window_total_row(c, window, d, pools))
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _projectable_pools(pools, prices, cluster_id):
+    rows = []
+    for p in pools:
+        if p["cluster_id"] != cluster_id:
+            continue
+        if str(p.get("priority", "")).lower() == "spot":
+            continue
+        if str(p.get("mode", "")).lower() != "user":
+            continue
+        if str(p.get("os_type", "")).lower() == "windows":
+            continue
+        if int(p.get("count") or 0) <= 0:
+            continue
+        pr = _pool_price(prices, p["location"], p["vm_size"]) or {}
+        if not (pr.get("od_hr") and pr.get("spot_hr")):
+            continue
+        rows.append((p, float(pr["od_hr"]), float(pr["spot_hr"])))
+    return rows
+
+
+def _projection_for_cluster(pools, prices, cluster_id, move_override, project_days):
+    candidates = _projectable_pools(pools, prices, cluster_id)
+    current_od_nodes = sum(int(p.get("count") or 0) for p, _od, _sp in candidates)
+    spot_nodes = sum(int(p.get("count") or 0) for p in pools
+                     if p["cluster_id"] == cluster_id
+                     and str(p.get("priority", "")).lower() == "spot")
+    if move_override is None:
+        remaining = float(current_od_nodes)
+        assumption = "theoretical max: all priced regular Linux User nodes move to spot"
+    else:
+        remaining = min(float(move_override), float(current_od_nodes))
+        assumption = "user override: move up to %.1f regular Linux User nodes to spot" % remaining
+    projected = 0.0
+    moved = 0.0
+    for p, od_hr, spot_hr in sorted(candidates, key=lambda x: x[1] - x[2], reverse=True):
+        if remaining <= 0:
+            break
+        n = min(float(p.get("count") or 0), remaining)
+        projected += n * max(0.0, od_hr - spot_hr) * 24.0 * float(project_days)
+        moved += n
+        remaining -= n
+    return {
+        "current_regular_user_od_nodes": current_od_nodes,
+        "current_spot_nodes": spot_nodes,
+        "project_move_to_spot_nodes": moved,
+        "project_on_demand_nodes_after": max(0.0, current_od_nodes - moved),
+        "projected_saving_usd": projected,
+        "projected_monthly_saving_usd": projected / float(project_days) * DAYS_PER_MONTH
+        if project_days else None,
+        "projection_assumption": assumption if candidates else "no priced regular Linux User OD pools",
+    }
+
+
+def savings_projection_table(summary, daily, clusters, pools, prices, windows,
+                             trend_days, baseline_days, project_days, move_override):
+    cols = ["cluster", "subscription", "environment", "location",
+            "first_observed_spot_cost_date", "before_window", "after_window",
+            "before_days", "after_days", "before_end_to_end_cost_usd",
+            "after_end_to_end_cost_usd", "actual_total_saving_vs_before_rate_usd",
+            "actual_total_delta_pct", "actual_spot_cost_usd",
+            "od_counterfactual_usd", "counterfactual_spot_saving_usd", "verdict",
+            "current_regular_user_od_nodes", "current_spot_nodes",
+            "project_move_to_spot_nodes", "project_on_demand_nodes_after",
+            "project_days", "projected_saving_usd", "projected_monthly_saving_usd",
+            "projection_assumption", "notes"]
+    sidx = summary.set_index("cluster_id") if not summary.empty and "cluster_id" in summary else pd.DataFrame()
+    rows = []
+    for c in clusters:
+        cid = c["id"]
+        w = windows.get(cid) or {}
+        first_spot = w.get("first_spot")
+        before_start, before_end = w.get("before_start"), w.get("before_end")
+        after_start, after_end = w.get("after_start"), w.get("after_end")
+        d = daily[daily["cluster_id"] == cid]
+        before = d[_period_mask(d, before_start, before_end)]
+        after = d[_period_mask(d, after_start, after_end)]
+        before_days = len(set(before["Date"]))
+        after_days = len(set(after["Date"]))
+        before_total = float(before["Total (USD)"].sum()) if before_days else None
+        after_total = float(after["Total (USD)"].sum()) if after_days else None
+        before_avg = before_total / before_days if before_days and before_total is not None else None
+        saving_vs_before_rate = (before_avg * after_days - after_total) \
+            if before_avg is not None and after_total is not None else None
+        delta_pct = (saving_vs_before_rate / (before_avg * after_days)) \
+            if saving_vs_before_rate is not None and before_avg and after_days else None
+        srow = sidx.loc[cid] if cid in sidx.index else {}
+        proj = _projection_for_cluster(pools, prices, cid, move_override, project_days)
+        rows.append({
+            "cluster": c["cluster"],
+            "subscription": c["subscription"],
+            "environment": c["environment"],
+            "location": c["location"],
+            "first_observed_spot_cost_date": first_spot.strftime("%Y-%m-%d")
+            if first_spot else "",
+            "before_window": "%s to %s" % (
+                before_start.strftime("%Y-%m-%d") if before_start else "",
+                before_end.strftime("%Y-%m-%d") if before_end else ""),
+            "after_window": "%s to %s" % (
+                after_start.strftime("%Y-%m-%d") if after_start else "",
+                after_end.strftime("%Y-%m-%d") if after_end else ""),
+            "before_days": before_days,
+            "after_days": after_days,
+            "before_end_to_end_cost_usd": before_total,
+            "after_end_to_end_cost_usd": after_total,
+            "actual_total_saving_vs_before_rate_usd": saving_vs_before_rate,
+            "actual_total_delta_pct": delta_pct,
+            "actual_spot_cost_usd": float(srow.get("last_%d_actual_spot_cost" % trend_days, 0.0))
+            if hasattr(srow, "get") else 0.0,
+            "od_counterfactual_usd": float(srow.get("last_%d_od_counterfactual" % trend_days, 0.0))
+            if hasattr(srow, "get") else 0.0,
+            "counterfactual_spot_saving_usd": srow.get(
+                "last_%d_estimated_spot_saving" % trend_days) if hasattr(srow, "get") else None,
+            "verdict": srow.get("verdict", "") if hasattr(srow, "get") else "",
+            "current_regular_user_od_nodes": proj["current_regular_user_od_nodes"],
+            "current_spot_nodes": proj["current_spot_nodes"],
+            "project_move_to_spot_nodes": proj["project_move_to_spot_nodes"],
+            "project_on_demand_nodes_after": proj["project_on_demand_nodes_after"],
+            "project_days": project_days,
+            "projected_saving_usd": proj["projected_saving_usd"],
+            "projected_monthly_saving_usd": proj["projected_monthly_saving_usd"],
+            "projection_assumption": proj["projection_assumption"],
+            "notes": "Actual total saving is before-rate normalized and workload-confounded; "
+                     "counterfactual spot saving uses actual spot spend and retail rates.",
+        })
+    return pd.DataFrame(rows, columns=cols)
+
+
+def projection_chart_rows(daily, projection, project_days):
+    cols = ["Date", "Actual total USD", "OD counterfactual total USD",
+            "Modeled future total USD"]
+    if daily.empty:
+        return pd.DataFrame(columns=cols)
+    hist = daily.groupby("Date", dropna=False).agg({
+        "Total (USD)": "sum",
+        "actual_spot_cost": "sum",
+        "od_counterfactual": "sum",
+    }).reset_index().sort_values("Date")
+    rows = []
+    for _idx, r in hist.iterrows():
+        counter = float(r["Total (USD)"]) - float(r["actual_spot_cost"]) + float(r["od_counterfactual"])
+        rows.append({
+            "Date": r["Date"],
+            "Actual total USD": float(r["Total (USD)"]),
+            "OD counterfactual total USD": counter if float(r["od_counterfactual"]) else None,
+            "Modeled future total USD": None,
+        })
+    max_date = parse_date(hist["Date"].max())
+    trailing = hist.tail(min(30, len(hist)))
+    base = float(trailing["Total (USD)"].mean()) if len(trailing) else 0.0
+    daily_saving = 0.0
+    if project_days and not projection.empty:
+        daily_saving = float(projection["projected_saving_usd"].fillna(0.0).sum()) / project_days
+    rows.append({
+        "Date": max_date.strftime("%Y-%m-%d"),
+        "Actual total USD": None,
+        "OD counterfactual total USD": None,
+        "Modeled future total USD": base,
+    })
+    for i in range(1, project_days + 1):
+        day = max_date + dt.timedelta(days=i)
+        rows.append({
+            "Date": day.strftime("%Y-%m-%d"),
+            "Actual total USD": None,
+            "OD counterfactual total USD": None,
+            "Modeled future total USD": max(0.0, base - daily_saving),
+        })
+    return pd.DataFrame(rows, columns=cols)
+
+
+def add_actual_projection_chart(ws, chart_data):
+    if len(chart_data) <= 1:
+        return None
+    ch = excel.add_line_chart(ws, "Actual total cost vs counterfactual/projection",
+                              len(chart_data) + 1, 2, 4,
+                              "B%d" % (len(chart_data) + 4), y_title="USD")
+    for idx in (1, 2):
+        if idx < len(ch.series):
+            ch.series[idx].graphicalProperties.line.dashStyle = "dash"
+    return ch
+
+
 def main(argv=None):
     p = base_parser("AKS spot savings after adoption")
     p.add_argument("--spot-trend-days", type=int, default=30,
@@ -429,6 +803,10 @@ def main(argv=None):
                    help="currency for Retail Prices API counterfactual")
     p.add_argument("--no-retail-prices", action="store_true",
                    help="skip Retail Prices API; total trend still works but savings verdict is PRICE_MISSING")
+    p.add_argument("--project-days", type=int, default=30,
+                   help="days for the modeled future projection")
+    p.add_argument("--project-move-od-nodes", type=float, default=None,
+                   help="override how many current regular Linux User OD nodes to model moving to spot per cluster")
     args = p.parse_args(argv)
 
     today = dt.date.today()
@@ -453,8 +831,8 @@ def main(argv=None):
 
     prices = {}
     if not args.no_retail_prices:
-        spot_pools = [p0 for p0 in pools if str(p0.get("priority", "")).lower() == "spot"]
-        prices = retail_price_lookup(spot_pools, args.currency) if spot_pools else {}
+        priced_pools = [p0 for p0 in pools if p0.get("vm_size")]
+        prices = retail_price_lookup(priced_pools, args.currency) if priced_pools else {}
     estimates = build_spot_estimates(cost["res"], pools, prices)
     daily, summary = annotate_daily_and_summary(
         daily, estimates, clusters, pools, args.spot_trend_days, args.spot_baseline_days,
@@ -463,6 +841,15 @@ def main(argv=None):
                                    args.spot_trend_days],
                                   ascending=[True, False], na_position="last") \
         if not summary.empty else summary
+    windows = spot_windows(daily, args.spot_trend_days, args.spot_baseline_days,
+                           args.spot_threshold_usd)
+    vmss = enrich_vmss_cost(cost["res"], pools, prices)
+    before_spot = period_cost_table(daily, vmss, clusters, pools, windows, "before")
+    after_spot = period_cost_table(daily, vmss, clusters, pools, windows, "after")
+    projection = savings_projection_table(
+        summary, daily, clusters, pools, prices, windows, args.spot_trend_days,
+        args.spot_baseline_days, args.project_days, args.project_move_od_nodes)
+    chart_data = projection_chart_rows(daily, projection, args.project_days)
     fleet_trend = fleet_trend_rows(daily)
     by_pool = pool_savings_rows(estimates, args.spot_trend_days)
     prdf = price_reference_rows(prices) if prices else pd.DataFrame(
@@ -494,11 +881,46 @@ def main(argv=None):
         "move because workload, autoscaler capacity, RI/SP coverage, disks, IPs or",
         "cluster fees changed; it is not used as the spot-savings verdict.",
         "",
+        "The BeforeSpot and AfterSpot tables use actual Cost Management rows by",
+        "PricingModel. current_nodes_now is current ARG inventory only; historical",
+        "node counts are not available from subscription-reader APIs. avg_node_equiv",
+        "is shown only as a cost/rate annotation where retail rates are available.",
+        "",
         "Recent Cost Management data can lag, so the newest --trim-days are excluded",
         "from averages by default. Currency: USD for actual CostUSD; retail rates use",
         "--currency.",
     ])
-    excel.add_table(wb, "SpotSavingsSummary", summary, section="summary",
+    period_money = ("actual_vmss_cost_usd", "cluster_fee_usd", "end_to_end_cost_usd")
+    period_ints = ("days_used", "current_nodes_now")
+    excel.add_table(wb, "BeforeSpot", before_spot, section="summary",
+                    money_cols=period_money, int_cols=period_ints,
+                    formats={"avg_node_equiv_at_retail": "0.0"}, max_width=90)
+    excel.add_table(wb, "AfterSpot", after_spot, section="summary",
+                    money_cols=period_money, int_cols=period_ints,
+                    formats={"avg_node_equiv_at_retail": "0.0"}, max_width=90)
+    excel.add_table(wb, "SavingsProjection", projection, section="summary",
+                    money_cols=("before_end_to_end_cost_usd", "after_end_to_end_cost_usd",
+                                "actual_total_saving_vs_before_rate_usd",
+                                "actual_spot_cost_usd", "od_counterfactual_usd",
+                                "counterfactual_spot_saving_usd",
+                                "projected_saving_usd", "projected_monthly_saving_usd"),
+                    pct_cols=("actual_total_delta_pct",),
+                    int_cols=("before_days", "after_days",
+                              "current_regular_user_od_nodes", "current_spot_nodes",
+                              "project_days"),
+                    formats={"project_move_to_spot_nodes": "0.0",
+                             "project_on_demand_nodes_after": "0.0"},
+                    fail_cols=("verdict",),
+                    fail_values=("COST_UP", "PRICE_MISSING"),
+                    warn_values=("FLAT", "BASELINE_MISSING", "NO_SPOT_COST"),
+                    max_width=100)
+    ws_chart = excel.add_table(wb, "ActualVsProjection", chart_data, section="summary",
+                               money_cols=("Actual total USD",
+                                           "OD counterfactual total USD",
+                                           "Modeled future total USD"))
+    add_actual_projection_chart(ws_chart, chart_data)
+    summary_display = summary.drop(columns=["cluster_id"], errors="ignore")
+    excel.add_table(wb, "SpotSavingsSummary", summary_display, section="summary",
                     money_cols=("pre_spot_avg_daily_total", "post_first_avg_daily_total",
                                 "last_%d_avg_daily_total" % args.spot_trend_days,
                                 "total_delta_vs_pre_per_day", "projected_monthly_total_delta",

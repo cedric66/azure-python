@@ -26,6 +26,35 @@ POOLS = [{
     "priority": "Spot",
     "count": 2,
 }]
+FULL_POOLS = [
+    {
+        "cluster_id": "cluster-1",
+        "cluster": "aks-dev-01",
+        "subscription": "contoso-platform",
+        "environment": "dev",
+        "location": "eastus",
+        "pool": "wrk",
+        "mode": "User",
+        "priority": "Regular",
+        "count": 4,
+        "vm_size": "Standard_D4s_v5",
+        "os_type": "Linux",
+    },
+    {
+        "cluster_id": "cluster-1",
+        "cluster": "aks-dev-01",
+        "subscription": "contoso-platform",
+        "environment": "dev",
+        "location": "eastus",
+        "pool": "spt",
+        "mode": "User",
+        "priority": "Spot",
+        "count": 2,
+        "vm_size": "Standard_D4s_v5",
+        "os_type": "Linux",
+    },
+]
+PRICES = {("eastus", "Standard_D4s_v5"): {"od_hr": 0.40, "spot_hr": 0.10}}
 
 
 def expect(cond, msg):
@@ -87,6 +116,37 @@ def estimate_rows(start, days, spot_start):
     return pd.DataFrame(rows)
 
 
+def raw_resource_rows(start, days, spot_start):
+    rows = []
+    start_d = dt.date.fromisoformat(start)
+    for i in range(days):
+        day = (start_d + dt.timedelta(days=i)).isoformat()
+        rows.append({
+            "cluster_id": CLUSTER["id"],
+            "cluster": CLUSTER["cluster"],
+            "subscription": CLUSTER["subscription"],
+            "environment": CLUSTER["environment"],
+            "location": CLUSTER["location"],
+            "Date": day,
+            "ResourceId": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/aks-wrk-11111111-vmss",
+            "PricingModel": "OnDemand",
+            "CostUSD": 100.0 if i < spot_start else 120.0,
+        })
+        if i >= spot_start:
+            rows.append({
+                "cluster_id": CLUSTER["id"],
+                "cluster": CLUSTER["cluster"],
+                "subscription": CLUSTER["subscription"],
+                "environment": CLUSTER["environment"],
+                "location": CLUSTER["location"],
+                "Date": day,
+                "ResourceId": "/subscriptions/s/resourceGroups/rg/providers/Microsoft.Compute/virtualMachineScaleSets/aks-spt-11111111-vmss",
+                "PricingModel": "Spot",
+                "CostUSD": 10.0,
+            })
+    return pd.DataFrame(rows)
+
+
 def test_counterfactual_saving_even_when_total_grows():
     daily = daily_rows("2026-05-01", 60, 30, total_growth=True)
     estimates = estimate_rows("2026-05-01", 60, 30)
@@ -104,6 +164,39 @@ def test_counterfactual_saving_even_when_total_grows():
     post = annotated[annotated["phase"] == "after_spot"]
     expect(post["cumulative_estimated_spot_saving"].iloc[-1] == 900.0,
            "daily cumulative saving should reach $900")
+
+
+def test_before_after_projection_tables_and_chart():
+    daily = daily_rows("2026-05-01", 60, 30, total_growth=True)
+    estimates = estimate_rows("2026-05-01", 60, 30)
+    annotated, summary = spot_savings.annotate_daily_and_summary(
+        daily, estimates, [CLUSTER], FULL_POOLS, trend_days=30, baseline_days=30)
+    raw = raw_resource_rows("2026-05-01", 60, 30)
+    vmss = spot_savings.enrich_vmss_cost(raw, FULL_POOLS, PRICES)
+    windows = spot_savings.spot_windows(annotated, 30, 30, spot_savings.SPOT_THRESHOLD_USD)
+    before = spot_savings.period_cost_table(
+        annotated, vmss, [CLUSTER], FULL_POOLS, windows, "before")
+    after = spot_savings.period_cost_table(
+        annotated, vmss, [CLUSTER], FULL_POOLS, windows, "after")
+    projection = spot_savings.savings_projection_table(
+        summary, annotated, [CLUSTER], FULL_POOLS, PRICES, windows, 30, 30, 30, None)
+
+    expect("OnDemand" in set(before["billing_type"]),
+           "BeforeSpot table should show on-demand billing rows")
+    expect("Spot" in set(after["billing_type"]),
+           "AfterSpot table should show spot billing rows")
+    expect(float(projection.iloc[0]["projected_monthly_saving_usd"]) > 0,
+           "projection should model a positive retail saving for OD->spot move")
+    expect(projection.iloc[0]["project_move_to_spot_nodes"] == 4,
+           "default projection should model all priced regular user OD nodes")
+
+    chart_data = spot_savings.projection_chart_rows(annotated, projection, 30)
+    from azrep import excel
+    wb = excel.new_workbook()
+    ws = excel.add_table(wb, "ActualVsProjection", chart_data)
+    ch = spot_savings.add_actual_projection_chart(ws, chart_data)
+    expect(ch.series[1].graphicalProperties.line.dashStyle == "dash",
+           "counterfactual/projection chart series should be dashed")
 
 
 def test_price_missing_does_not_claim_savings():
@@ -129,6 +222,7 @@ def test_no_spot_cost():
 
 def main():
     test_counterfactual_saving_even_when_total_grows()
+    test_before_after_projection_tables_and_chart()
     test_price_missing_does_not_claim_savings()
     test_no_spot_cost()
     print("\nALL SPOT-SAVINGS TESTS PASSED")

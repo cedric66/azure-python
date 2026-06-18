@@ -1048,15 +1048,25 @@ def main():
                     for r in range(2, ws.max_row + 1)}
         _expect("PRICE_MISSING" in verdicts or "NO_SPOT_COST" in verdicts,
                 "smoke fixture should expose explicit spot-savings verdicts: %s" % verdicts)
+        for sheet in ("BeforeSpot", "AfterSpot", "SavingsProjection", "ActualVsProjection"):
+            _expect(sheet in wb.sheetnames, "spot savings workbook missing %s" % sheet)
+        ws = wb["SavingsProjection"]
+        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        _expect("projected_monthly_saving_usd" in headers,
+                "projection table should include modeled monthly saving")
+        _expect(len(wb["ActualVsProjection"]._charts) >= 1,
+                "actual-vs-projection sheet should include a chart")
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily",
+        ["ReadMe", "BeforeSpot", "AfterSpot", "SavingsProjection",
+         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily",
          "SpotSavingsByPool", "RawDailyCost"],
         [chk_spot_savings])
 
     run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
                                                "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
+        ["ReadMe", "BeforeSpot", "AfterSpot", "SavingsProjection",
+         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
         [chk_spot_savings])
 
     run(utilization_idle, base + ["--all", "--days", "3"],
