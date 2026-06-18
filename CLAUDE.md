@@ -85,6 +85,7 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | version | version_eol.py | ARG + aks_supported_versions per region |
 | spot | spot_cluster_report.py | Cost Mgmt + ARG + retail prices |
 | spot-design | spot_split_design.py | ARG + retail prices |
+| spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices |
 | utilization | utilization_idle.py | ARG + Monitor (1 paced call/cluster) |
 | governance | governance.py | ARG only; CHECKS list of (id, desc, fn(c, pools)->(status, detail)) |
 | conformance | conformance.py | ARG only; rules built from a golden YAML (sandbox config schema, subset) via build_rules(); requires --golden |
@@ -145,6 +146,11 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 - Spot priority is IMMUTABLE on an existing agent pool — spot conversion always
   means create a new spot pool + shrink the OD pool (spot-sim does this). AKS
   auto-adds the `scalesetpriority=spot:NoSchedule` taint; don't send it in PUTs.
+- `spot-savings` infers spot adoption from the first daily Cost Management row
+  with Spot spend above a threshold. ARG has only current node-pool state, so
+  this is cost-observed adoption, not an ARM creation timestamp. The headline
+  savings verdict is a retail-rate counterfactual for actual Spot VMSS spend;
+  whole-cluster before/after total cost is contextual and workload-confounded.
 - Control-plane-only AKS upgrade = PUT the managed cluster WITHOUT
   `properties.agentPoolProfiles`; pools upgrade individually via agentPool
   `orchestratorVersion`. One minor hop at a time.
@@ -200,6 +206,7 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 uv run python tests/smoke_test.py            # offline end-to-end, all reports
 uv run python tests/test_sandbox.py          # sandbox family: clone/impact/k8s-test/spot/upgrade
 uv run python tests/test_spot_split.py
+uv run python tests/test_spot_savings.py
 uv run python tests/test_vulnerability_report.py
 ```
 

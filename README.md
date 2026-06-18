@@ -31,6 +31,7 @@ uv run python aks_report.py design --subs contoso-platform --rg rg-apps-dev
 uv run python aks_report.py network --nonprod
 uv run python aks_report.py optimization --cluster-contains payments
 uv run python aks_report.py spot-design --cluster aks-dev-01
+uv run python aks_report.py spot-savings --cluster aks-dev-01
 uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
 uv run python aks_report.py sandbox plan sandbox.example.yaml
 uv run python aks_report.py list
@@ -52,6 +53,7 @@ The files below are the modules the launcher calls.
 | `aks_lifecycle.py` | AKS release calendar GA/EOL dates, managed add-ons, retirements/deprecations, GA and preview features, behavior changes, per-version component breaking changes | Microsoft Learn pages + Azure/AKS GitHub release notes (no Azure access) |
 | `spot_cluster_report.py` | One spot workbook: spot/on-demand pool configuration, autoscaler profile, zones, taints, eviction/price settings, pool/resource cost breakup, assessment, plus spot-candidate pools with retail-price savings (formerly `spot_opportunity.py`) | Cost Mgmt, ARG, public Retail Prices API |
 | `spot_split_design.py` | `spot-design`: present vs future node-pool split design for team-dedicated clusters (Korea pattern) - team auto-detect from labels/taints (+`teams.csv` override), on-demand floor + paired spot pool sizing, ready-to-run `az aks nodepool add` commands, BU workload YAML (tolerations/affinity/spread/PDB), rollout plan, savings, Mermaid design doc convertible via `convert` | ARG, Retail Prices API |
+| `spot_savings.py` | `spot-savings`: day-by-day cost after first observed Spot spend, last-30-day retail counterfactual savings for actual Spot VMSS usage, pre/post total-cost context and pool-level savings breakup | Cost Mgmt, ARG, public Retail Prices API |
 | `utilization_idle.py` | Node CPU/memory avg/p95/max per cluster, idle & stopped-but-billing clusters | ARG, Monitor platform metrics |
 | `governance.py` | 17-check hygiene scorecard (private API, local accounts, kubenet, zones, autoscaler, tiers, ...) | Resource Graph only |
 | `conformance.py` | `conformance`: fleet drift against a golden baseline YAML (same schema as the sandbox config; every key you set becomes a rule) - per-cluster scorecard, fail details, failures by rule | Resource Graph only |
@@ -121,6 +123,7 @@ uv sync                                  # resync after pulling repo changes
 uv run python aks_report.py ...          # run reports in the project env
 uv run python tests/smoke_test.py        # run the offline smoke test
 uv run python tests/test_spot_split.py   # run the spot-design fixture test
+uv run python tests/test_spot_savings.py # run the spot-savings math test
 uv add <package>                         # add a runtime dependency
 uv lock                                  # refresh uv.lock after dependency edits
 uv tree                                  # inspect resolved dependencies

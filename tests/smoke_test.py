@@ -861,6 +861,7 @@ def main():
     import policy_report
     import policy_components
     import spot_cluster_report
+    import spot_savings
     import subscription_rearch
     import tag_chargeback
     import utilization_idle
@@ -876,8 +877,8 @@ def main():
     for mod in (architecture_design, cluster_360, cluster_deepdive, conformance,
                 fleet_cost, fleet_inventory, governance,
                 network_ip_capacity, optimization_report, policy_report,
-                policy_components, spot_cluster_report, subscription_rearch, tag_chargeback,
-                utilization_idle, version_eol):
+                policy_components, spot_cluster_report, spot_savings,
+                subscription_rearch, tag_chargeback, utilization_idle, version_eol):
         mod.connect = fake_connect
 
     from openpyxl import Workbook, load_workbook
@@ -1035,6 +1036,28 @@ def main():
         ["ReadMe", "Summary", "SpotNodePools", "SpotAssessment", "CostByCluster"],
         [lambda wb: _expect(wb["SpotNodePools"].max_row >= 3,
                             "spot alias should route to the merged spot report")])
+
+    def chk_spot_savings(wb):
+        ws = wb["SpotSavingsSummary"]
+        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        for col in ("first_observed_spot_cost_date", "verdict",
+                    "last_30_actual_spot_cost", "last_30_od_counterfactual"):
+            _expect(col in headers, "spot savings summary missing %s" % col)
+        verdict_col = headers.index("verdict") + 1
+        verdicts = {ws.cell(row=r, column=verdict_col).value
+                    for r in range(2, ws.max_row + 1)}
+        _expect("PRICE_MISSING" in verdicts or "NO_SPOT_COST" in verdicts,
+                "smoke fixture should expose explicit spot-savings verdicts: %s" % verdicts)
+
+    run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
+        ["ReadMe", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily",
+         "SpotSavingsByPool", "RawDailyCost"],
+        [chk_spot_savings])
+
+    run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
+                                               "--trim-days", "0"],
+        ["ReadMe", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
+        [chk_spot_savings])
 
     run(utilization_idle, base + ["--all", "--days", "3"],
         ["ReadMe", "Utilization", "IdleCandidates", "Stopped", "Summary"])

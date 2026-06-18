@@ -11,6 +11,7 @@ Examples:
   uv run python aks_report.py design --cluster aks-dev-01 --all
   uv run python aks_report.py network --nonprod
   uv run python aks_report.py spot-design --cluster aks-dev-01
+  uv run python aks_report.py spot-savings --cluster aks-dev-01
   uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
   uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
   uv run python aks_report.py sandbox plan sandbox.example.yaml
@@ -81,6 +82,14 @@ REPORTS = [
         "title": "Spot split design",
         "description": "Present vs future node-pool split for team-dedicated clusters: "
                        "az commands, workload YAML, rollout plan, Mermaid design doc.",
+    },
+    {
+        "key": "spot-savings",
+        "aliases": ("spot-trend", "spot-roi", "spot-after"),
+        "module": "spot_savings",
+        "title": "Spot savings after adoption",
+        "description": "Day-by-day cost after first observed Spot spend, with "
+                       "last-30-day retail counterfactual savings and total-cost context.",
     },
     {
         "key": "utilization",
