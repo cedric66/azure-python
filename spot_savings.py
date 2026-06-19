@@ -537,7 +537,6 @@ def _window_total_row(cluster, window, daily, pools):
         "actual_vmss_cost_usd": compute,
         "cluster_fee_usd": fee,
         "end_to_end_cost_usd": total,
-        "node_count_note": "Current node count only; historical inventory is not available from ARG.",
     }
 
 
@@ -546,8 +545,7 @@ def period_cost_table(daily, vmss, clusters, pools, windows, phase):
             "window_end", "days_used", "row_type", "pool", "vm_size",
             "node_type_mode", "current_priority", "billing_type",
             "current_nodes_now", "avg_node_equiv_at_retail", "node_count_source",
-            "actual_vmss_cost_usd", "cluster_fee_usd", "end_to_end_cost_usd",
-            "node_count_note"]
+            "actual_vmss_cost_usd", "cluster_fee_usd", "end_to_end_cost_usd"]
     rows = []
     by_cluster = {c["id"]: c for c in clusters}
     for cid, c in by_cluster.items():
@@ -595,10 +593,6 @@ def period_cost_table(daily, vmss, clusters, pools, windows, phase):
                 "actual_vmss_cost_usd": float(grp["CostUSD"].sum()),
                 "cluster_fee_usd": None,
                 "end_to_end_cost_usd": None,
-                "node_count_note": (
-                    "current_nodes_now is current ARG state, not historical; "
-                    "avg_node_equiv_at_retail is a cost/rate estimate only."
-                ),
             })
         rows.append(_window_total_row(c, window, d, pools))
     return pd.DataFrame(rows, columns=cols)
@@ -668,7 +662,7 @@ def savings_projection_table(summary, daily, clusters, pools, prices, windows,
             "current_regular_user_od_nodes", "current_spot_nodes",
             "project_move_to_spot_nodes", "project_on_demand_nodes_after",
             "project_days", "projected_saving_usd", "projected_monthly_saving_usd",
-            "projection_assumption", "notes"]
+            "projection_assumption"]
     sidx = summary.set_index("cluster_id") if not summary.empty and "cluster_id" in summary else pd.DataFrame()
     rows = []
     for c in clusters:
@@ -725,10 +719,13 @@ def savings_projection_table(summary, daily, clusters, pools, prices, windows,
             "projected_saving_usd": proj["projected_saving_usd"],
             "projected_monthly_saving_usd": proj["projected_monthly_saving_usd"],
             "projection_assumption": proj["projection_assumption"],
-            "notes": "Actual total saving is before-rate normalized and workload-confounded; "
-                     "counterfactual spot saving uses actual spot spend and retail rates.",
         })
-    return pd.DataFrame(rows, columns=cols)
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        df = df.sort_values(["verdict", "projected_monthly_saving_usd"],
+                            ascending=[True, False],
+                            na_position="last").reset_index(drop=True)
+    return df
 
 
 def projection_chart_rows(daily, projection, project_days):
@@ -855,7 +852,8 @@ def main(argv=None):
     prdf = price_reference_rows(prices) if prices else pd.DataFrame(
         columns=["region", "vm_size", "od_hr", "spot_hr", "discount %"])
 
-    raw = cost["res"].copy()
+    raw = cost["res"].drop(
+        columns=["UsageDate", "subscription_id", "cluster_id"], errors="ignore").copy()
     if not raw.empty:
         raw["pool"] = raw["ResourceId"].map(pool_from_resource_id)
 
@@ -879,7 +877,9 @@ def main(argv=None):
         "",
         "Whole-cluster before/after total cost is included as context only. It can",
         "move because workload, autoscaler capacity, RI/SP coverage, disks, IPs or",
-        "cluster fees changed; it is not used as the spot-savings verdict.",
+        "cluster fees changed; it is not used as the spot-savings verdict. In",
+        "SavingsProjection, actual_total_saving_vs_before_rate_usd applies the pre-spot",
+        "daily rate across the after-window day count, so it is workload-confounded.",
         "",
         "The BeforeSpot and AfterSpot tables use actual Cost Management rows by",
         "PricingModel. current_nodes_now is current ARG inventory only; historical",
@@ -938,35 +938,42 @@ def main(argv=None):
                     fail_values=("COST_UP", "PRICE_MISSING"),
                     warn_values=("FLAT", "BASELINE_MISSING", "NO_SPOT_COST"),
                     max_width=90)
-    ws_trend = excel.add_table(wb, "FleetDailyTrend", fleet_trend, section="summary",
-                               money_cols=tuple(PM_ORDER + ["Cluster fee",
-                                                            "Compute total (USD)",
-                                                            "Total (USD)",
+    fleet_disp = fleet_trend.rename(columns={
+        "Cluster fee": "cluster_fee_usd", "Compute total (USD)": "compute_total_usd",
+        "Total (USD)": "total_usd", "Spot %": "spot_share"})
+    ws_trend = excel.add_table(wb, "FleetDailyTrend", fleet_disp, section="summary",
+                               money_cols=tuple(PM_ORDER + ["cluster_fee_usd",
+                                                            "compute_total_usd",
+                                                            "total_usd",
                                                             "actual_spot_cost",
                                                             "od_counterfactual",
                                                             "estimated_spot_saving"]),
-                               pct_cols=("Spot %",))
+                               pct_cols=("spot_share",))
     if len(fleet_trend) > 1:
-        total_col = list(fleet_trend.columns).index("Total (USD)") + 1
-        spot_col = list(fleet_trend.columns).index("Spot") + 1
+        total_col = list(fleet_disp.columns).index("total_usd") + 1
+        spot_col = list(fleet_disp.columns).index("Spot") + 1
         excel.add_line_chart(ws_trend, "Fleet daily total and spot cost",
                              len(fleet_trend) + 1, spot_col, total_col,
                              "B%d" % (len(fleet_trend) + 4), y_title="USD")
-    excel.add_table(wb, "SpotSavingsDaily", daily.drop(columns=["cluster_id"]),
-                    money_cols=tuple(PM_ORDER + ["Cluster fee", "Compute total (USD)",
-                                                 "Total (USD)", "actual_spot_cost",
+    daily_disp = daily.drop(columns=["cluster_id"]).rename(columns={
+        "Cluster fee": "cluster_fee_usd", "Compute total (USD)": "compute_total_usd",
+        "Total (USD)": "total_usd", "Spot %": "spot_share"})
+    excel.add_table(wb, "SpotSavingsDaily", daily_disp,
+                    money_cols=tuple(PM_ORDER + ["cluster_fee_usd", "compute_total_usd",
+                                                 "total_usd", "actual_spot_cost",
                                                  "od_counterfactual",
                                                  "estimated_spot_saving",
                                                  "total_delta_vs_pre_avg",
                                                  "cumulative_estimated_spot_saving",
                                                  "cumulative_total_delta_vs_pre"]),
-                    pct_cols=("Spot %",),
+                    pct_cols=("spot_share",),
                     int_cols=("days_since_first_spot_cost",),
                     max_width=80)
     excel.add_table(wb, "SpotSavingsByPool", by_pool,
                     money_cols=("actual_spot_cost", "od_counterfactual",
                                 "estimated_spot_saving"),
-                    formats={"spot_hr": "#,##0.0000", "od_hr": "#,##0.0000"},
+                    formats={"spot_hr": "#,##0.0000", "od_hr": "#,##0.0000",
+                             "estimated_spot_node_hours": "#,##0.0"},
                     int_cols=("spot_days",), max_width=90)
     excel.add_table(wb, "PriceReference", prdf, section="reference",
                     formats={"od_hr": "#,##0.0000", "spot_hr": "#,##0.0000"},
