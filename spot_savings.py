@@ -4,18 +4,22 @@ This report answers: "after a cluster added spot node pools, did it actually
 save money?" It uses subscription-scope Cost Management queries only.
 
 Tabs: ReadMe, SpotSavingsHeadline, SpotTimeline, TopSavers, SavingsProjection,
-BeforeSpot, AfterSpot, ActualVsProjection, SpotSavingsSummary, FleetDailyTrend,
-SpotSavingsDaily, SpotSavingsByPool, PriceReference, RawDailyCost.
+SavingsByEnv, BeforeSpot, AfterSpot, ActualVsProjection, SpotSavingsSummary,
+FleetDailyTrend, SpotSavingsDaily, SpotSavingsByPool, PriceReference, RawDailyCost.
 
-By default only clusters that currently have a spot node pool are included (a
-crisp presentation view). Use --include-all-clusters to restore full-fleet behavior.
+Environments are inferred from each cluster/resource-group name: tokens like
+-d-, -s-, -r-, -p-, -u- map to dev/sit/dr/prod/uat (see ENV_CODE_MAP in azrep/subs).
+The SavingsByEnv tab rolls every cluster up to a prod vs non-prod tier so a
+Business Unit owner can read savings by environment class. The full fleet in
+scope is kept by default; pass --only-spot-clusters to restrict to clusters with
+a current spot node pool.
 
 Usage:
   python spot_savings.py --all
   python spot_savings.py --env dev --spot-trend-days 30 --spot-baseline-days 30
   python spot_savings.py --cluster aks-dev-01 --lookback-days 120
   python spot_savings.py --cluster aks-dev-01 --project-move-od-nodes 3
-  python spot_savings.py --all --include-all-clusters
+  python spot_savings.py --all --only-spot-clusters
 """
 import datetime as dt
 from collections import defaultdict
@@ -27,7 +31,7 @@ from azrep import excel
 from azrep.costmgmt import CostClient, dim_in
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
-from azrep.subs import base_parser, load_subscriptions, out_path, pick_scope
+from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_scope
 from spot_cluster_report import (PM_ORDER, chunks, pool_from_resource_id,
                                  price_reference_rows, retail_price_lookup)
 
@@ -930,6 +934,57 @@ def top_savers_rows(projection, trend_days, top_n=15):
     return df[cols]
 
 
+def savings_by_env_rows(projection, trend_days):
+    """Roll up spot savings by environment tier (prod vs non-prod), then by the
+    fine-grained environment each cluster was inferred to (e.g. prod, dev, sit,
+    dr, uat from -p-/-d-/-s-/-r-/-u- name tokens). One row per environment.
+
+    Prod/non-prod is decided via azrep.subs.is_prod() on the resolved
+    environment, so a Business Unit owner can read a single hero line per class.
+    """
+    cols = ["tier", "environment", "clusters", "verified_savers",
+            "actual_spot_cost_usd", "od_counterfactual_usd",
+            "counterfactual_spot_saving_usd", "projected_monthly_saving_usd",
+            "annualized_projected_usd", "savings_rate_pct", "top_verdict"]
+    if projection is None or projection.empty:
+        return pd.DataFrame(columns=cols)
+    df = projection.copy()
+    df["tier"] = ["prod" if is_prod(e) else "non-prod" for e in df["environment"]]
+    num_cols = ["actual_spot_cost_usd", "od_counterfactual_usd",
+                "counterfactual_spot_saving_usd", "projected_monthly_saving_usd",
+                "annualized_projected_usd"]
+    for c in num_cols:
+        df[c] = pd.to_numeric(df.get(c), errors="coerce")
+    rows = []
+    for (tier, env), grp in df.groupby(["tier", "environment"], dropna=False):
+        savers = int((grp["verdict"] == "SAVING").sum())
+        cf = float(grp["od_counterfactual_usd"].fillna(0.0).sum())
+        sv = float(grp["counterfactual_spot_saving_usd"].fillna(0.0).sum())
+        rows.append({
+            "tier": tier,
+            "environment": env,
+            "clusters": int(len(grp)),
+            "verified_savers": savers,
+            "actual_spot_cost_usd": float(grp["actual_spot_cost_usd"].fillna(0.0).sum()),
+            "od_counterfactual_usd": cf,
+            "counterfactual_spot_saving_usd": sv,
+            "projected_monthly_saving_usd":
+                float(grp["projected_monthly_saving_usd"].fillna(0.0).sum()),
+            "annualized_projected_usd":
+                float(grp["annualized_projected_usd"].fillna(0.0).sum()),
+            "savings_rate_pct": _safe_div(sv, cf),
+            "top_verdict": grp["verdict"].mode().iat[0] if not grp["verdict"].mode().empty else "",
+        })
+    out = pd.DataFrame(rows, columns=cols)
+    if not out.empty:
+        tier_rank = {"prod": 0, "non-prod": 1}
+        out["_rank"] = out["tier"].map(tier_rank).fillna(9)
+        out = out.sort_values(["_rank", "projected_monthly_saving_usd"],
+                              ascending=[True, False]).drop(columns=["_rank"])
+        out = out.reset_index(drop=True)
+    return out
+
+
 def _safe_div_vec(num, den):
     """Vectorized safe-division returning NaN where den is 0/NaN (not inf)."""
     num = pd.to_numeric(num, errors="coerce")
@@ -1055,9 +1110,13 @@ def main(argv=None):
                    help="days for the modeled future projection")
     p.add_argument("--project-move-od-nodes", type=float, default=None,
                    help="override how many current regular Linux User OD nodes to model moving to spot per cluster")
+    p.add_argument("--only-spot-clusters", action="store_true",
+                   help="keep only clusters that currently have a spot node pool in ARG "
+                        "(default keeps the full fleet in scope; environment is inferred from "
+                        "the cluster/RG name using -p-/-d-/-r- tokens)")
     p.add_argument("--include-all-clusters", action="store_true",
-                   help="include clusters with no current spot node pool (default is spot-clusters "
-                        "only, for a crisp savings view); use this to restore full-fleet behavior")
+                   help="DEPRECATED no-op kept for backward compatibility; the full fleet is "
+                        "now kept by default. Use --only-spot-clusters for the opposite filter.")
     args = p.parse_args(argv)
 
     today = dt.date.today()
@@ -1072,7 +1131,8 @@ def main(argv=None):
     env_keys = [k.strip() for k in args.env_tag_keys.split(",") if k.strip()]
     clusters, pools = load_fleet(session, sel, env_filter, args.include_unknown_env, env_keys)
     dropped_total = 0
-    if not args.include_all_clusters:
+    only_spot = args.only_spot_clusters or False
+    if only_spot:
         spot_cluster_ids = {p["cluster_id"] for p in pools
                             if str(p.get("priority", "")).lower() == "spot"}
         kept = [c for c in clusters if c["id"] in spot_cluster_ids]
@@ -1080,8 +1140,7 @@ def main(argv=None):
         clusters = kept
         pools = [p for p in pools if p["cluster_id"] in spot_cluster_ids]
         log("Spot-only filter: %d cluster(s) with a current spot node pool kept, "
-            "%d without dropped (use --include-all-clusters to include them)"
-            % (len(clusters), dropped_total))
+            "%d without dropped" % (len(clusters), dropped_total))
     if not clusters:
         log("No clusters in scope.")
         return
@@ -1114,6 +1173,7 @@ def main(argv=None):
     chart_data = projection_chart_rows(daily, projection, args.project_days)
     timeline = timeline_rows(daily, projection, args.project_days)
     top_savers = top_savers_rows(projection, args.spot_trend_days)
+    by_env = savings_by_env_rows(projection, args.spot_trend_days)
     fleet_trend = fleet_trend_rows(daily)
     by_pool = pool_savings_rows(estimates, args.spot_trend_days)
     headline = headline_rows(summary, projection, args.spot_trend_days)
@@ -1130,12 +1190,13 @@ def main(argv=None):
         "Generated: %s   Scope: %s   Daily cost window: %s to %s" %
         (dt.datetime.now().strftime("%Y-%m-%d %H:%M"), env_filter or "all",
          d_from, d_to),
-        "Clusters in scope: %d (%d with a current spot node pool)   Cost Management "
+        "Clusters in scope: %d   Spot-pool clusters in scope: %d   Cost Management "
         "calls: %d   Trailing days trimmed: %d" %
-        (len(clusters) + dropped_total, len(clusters), cost["calls"], args.trim_days),
-        "Scope filter: %s (use --include-all-clusters to include clusters with no "
-        "current spot node pool)" % ("spot-clusters only" if dropped_total
-                                     else "all clusters already have a spot pool"),
+        (len(clusters), len(clusters) - dropped_total, cost["calls"], args.trim_days),
+        "Scope filter: %s   Environment tier is inferred from the cluster/RG name "
+        "(-d-/-s-/-r-/-p-/-u- -> dev/sit/dr/prod/uat) and rolled up to prod vs "
+        "non-prod in the SavingsByEnv tab." %
+        ("spot-clusters only (--only-spot-clusters)" if only_spot else "full fleet in scope"),
         "",
         "WHAT THIS REPORT SHOWS",
         "This workbook answers a single FinOps question for business owners: after our",
@@ -1152,6 +1213,8 @@ def main(argv=None):
         "     projected monthly and annualized saving, with a plain-English status.",
         "  4. SavingsProjection   - where the remaining runway is: for each cluster, how",
         "     many on-demand nodes could still move to spot and the modeled monthly $.",
+        "  4b. SavingsByEnv        - same data rolled up to prod vs non-prod tiers so a",
+        "     Business Unit owner can read savings by environment class.",
         "  5. BeforeSpot/AfterSpot - actual Cost Management spend split by pool before",
         "     and after spot adoption, for due-diligence checks.",
         "  6. SpotSavingsSummary   - per-cluster technical detail (windows, shares).",
@@ -1241,6 +1304,23 @@ def main(argv=None):
                     fail_values=("COST_UP", "PRICE_MISSING"),
                     warn_values=("FLAT", "BASELINE_MISSING", "NO_SPOT_COST"),
                     max_width=100)
+    ws_env = excel.add_table(wb, "SavingsByEnv", by_env, section="summary",
+                             money_cols=("actual_spot_cost_usd", "od_counterfactual_usd",
+                                         "counterfactual_spot_saving_usd",
+                                         "projected_monthly_saving_usd",
+                                         "annualized_projected_usd"),
+                             pct_cols=("savings_rate_pct",),
+                             int_cols=("clusters", "verified_savers"),
+                             fail_cols=("top_verdict",),
+                             fail_values=("COST_UP", "PRICE_MISSING"),
+                             warn_values=("FLAT", "NO_SPOT_COST"),
+                             max_width=100)
+    if len(by_env) > 1:
+        env_monthly_col = list(by_env.columns).index("projected_monthly_saving_usd") + 1
+        excel.add_bar_chart(
+            ws_env, "Projected monthly saving by environment",
+            len(by_env) + 1, env_monthly_col,
+            "I%d" % (len(by_env) + 4), y_title="USD / month")
     ws_chart = excel.add_table(wb, "ActualVsProjection", chart_data, section="summary",
                                money_cols=("Actual total USD",
                                            "OD counterfactual total USD",

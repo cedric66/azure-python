@@ -1085,49 +1085,63 @@ def main():
                 "headline should surface an annualized run-rate: %s" % head_metrics)
         _expect(any(str(m).startswith("Fleet savings rate") for m in head_metrics),
                 "headline should surface a fleet savings rate %%: %s" % head_metrics)
+        # SavingsByEnv rolls clusters up to prod vs non-prod tiers.
+        _expect("SavingsByEnv" in wb.sheetnames,
+                "spot savings workbook should include the SavingsByEnv tier roll-up")
+        env_ws = wb["SavingsByEnv"]
+        env_headers = [env_ws.cell(row=1, column=j).value
+                       for j in range(1, env_ws.max_column + 1)]
+        for col in ("tier", "environment", "projected_monthly_saving_usd"):
+            _expect(col in env_headers, "SavingsByEnv missing %s" % col)
+        env_tiers = {env_ws.cell(row=r, column=1).value
+                     for r in range(2, env_ws.max_row + 1)}
+        _expect(env_tiers, "SavingsByEnv should have at least one tier row")
 
-    def chk_spot_only(wb):
-        # default behaviour: clusters with no current spot pool are omitted
+    def chk_full_fleet(wb):
+        # default behaviour: the full fleet in scope is kept (no spot-pool filter
+        # applied unless --only-spot-clusters is passed)
+        ws = wb["SpotSavingsSummary"]
+        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        cluster_col = headers.index("cluster") + 1
+        kept = {ws.cell(row=r, column=cluster_col).value
+                for r in range(2, ws.max_row + 1)}
+        _expect("aks-dev-01" in kept and "aks-prod-01" in kept and "aks-dev-02" in kept,
+                "default spot-savings should keep the full fleet in scope: %s" % kept)
+
+    run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
+        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
+         "SavingsProjection", "SavingsByEnv", "BeforeSpot", "AfterSpot",
+         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
+         "SpotSavingsDaily", "SpotSavingsByPool", "RawDailyCost"],
+        [chk_spot_savings, chk_full_fleet])
+
+    run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
+                                               "--trim-days", "0"],
+        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
+         "SavingsProjection", "SavingsByEnv", "BeforeSpot", "AfterSpot",
+         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
+         "SpotSavingsDaily"],
+        [chk_spot_savings, chk_full_fleet])
+
+    def chk_only_spot(wb):
+        # --only-spot-clusters keeps only clusters with a current spot node pool
         ws = wb["SpotSavingsSummary"]
         headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
         cluster_col = headers.index("cluster") + 1
         kept = {ws.cell(row=r, column=cluster_col).value
                 for r in range(2, ws.max_row + 1)}
         _expect("aks-dev-01" in kept and "aks-prod-01" in kept,
-                "spot-only summary should keep the two spot-pool clusters: %s" % kept)
+                "--only-spot-clusters should keep the two spot-pool clusters: %s" % kept)
         _expect("aks-dev-02" not in kept,
-                "spot-only summary should drop the cluster with no spot pool: %s" % kept)
-
-    run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
-         "SavingsProjection", "BeforeSpot", "AfterSpot", "ActualVsProjection",
-         "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily",
-         "SpotSavingsByPool", "RawDailyCost"],
-        [chk_spot_savings, chk_spot_only])
-
-    run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
-                                               "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
-         "SavingsProjection", "BeforeSpot", "AfterSpot", "ActualVsProjection",
-         "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
-        [chk_spot_savings, chk_spot_only])
-
-    def chk_include_all(wb):
-        # --include-all-clusters restores the full fleet (incl. no-spot-pool cluster)
-        ws = wb["SpotSavingsSummary"]
-        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
-        cluster_col = headers.index("cluster") + 1
-        kept = {ws.cell(row=r, column=cluster_col).value
-                for r in range(2, ws.max_row + 1)}
-        _expect("aks-dev-02" in kept,
-                "--include-all-clusters should restore the no-spot-pool cluster: %s" % kept)
+                "--only-spot-clusters should drop the cluster with no spot pool: %s" % kept)
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0",
-                              "--include-all-clusters"],
+                              "--only-spot-clusters"],
         ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
-         "SavingsProjection", "BeforeSpot", "AfterSpot", "ActualVsProjection",
-         "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
-        [chk_include_all])
+         "SavingsProjection", "SavingsByEnv", "BeforeSpot", "AfterSpot",
+         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
+         "SpotSavingsDaily"],
+        [chk_only_spot])
 
     run(utilization_idle, base + ["--all", "--days", "3"],
         ["ReadMe", "Utilization", "IdleCandidates", "Stopped", "Summary"])
