@@ -3,9 +3,9 @@
 This report answers: "after a cluster added spot node pools, did it actually
 save money?" It uses subscription-scope Cost Management queries only.
 
-Tabs: ReadMe, SpotSavingsHeadline, BeforeSpot, AfterSpot, SavingsProjection,
-ActualVsProjection, SpotSavingsSummary, FleetDailyTrend, SpotSavingsDaily,
-SpotSavingsByPool, PriceReference, RawDailyCost.
+Tabs: ReadMe, SpotSavingsHeadline, SpotTimeline, TopSavers, SavingsProjection,
+BeforeSpot, AfterSpot, ActualVsProjection, SpotSavingsSummary, FleetDailyTrend,
+SpotSavingsDaily, SpotSavingsByPool, PriceReference, RawDailyCost.
 
 By default only clusters that currently have a spot node pool are included (a
 crisp presentation view). Use --include-all-clusters to restore full-fleet behavior.
@@ -21,6 +21,7 @@ import datetime as dt
 from collections import defaultdict
 
 import pandas as pd
+from openpyxl.chart import BarChart, Reference
 
 from azrep import excel
 from azrep.costmgmt import CostClient, dim_in
@@ -666,6 +667,7 @@ def savings_projection_table(summary, daily, clusters, pools, prices, windows,
             "current_regular_user_od_nodes", "current_spot_nodes",
             "project_move_to_spot_nodes", "project_on_demand_nodes_after",
             "project_days", "projected_saving_usd", "projected_monthly_saving_usd",
+            "annualized_projected_usd", "savings_rate_pct",
             "projection_assumption"]
     sidx = summary.set_index("cluster_id") if not summary.empty and "cluster_id" in summary else pd.DataFrame()
     rows = []
@@ -689,6 +691,12 @@ def savings_projection_table(summary, daily, clusters, pools, prices, windows,
             if saving_vs_before_rate is not None and before_avg and after_days else None
         srow = sidx.loc[cid] if cid in sidx.index else {}
         proj = _projection_for_cluster(pools, prices, cid, move_override, project_days)
+        # Per-cluster savings rate = realized spot saving / OD counterfactual.
+        cf_v = float(srow.get("last_%d_od_counterfactual" % trend_days, 0.0)) \
+            if hasattr(srow, "get") else 0.0
+        sv_v = srow.get("last_%d_estimated_spot_saving" % trend_days) \
+            if hasattr(srow, "get") else None
+        srow_rate = _safe_div(sv_v, cf_v) if sv_v is not None else None
         rows.append({
             "cluster": c["cluster"],
             "subscription": c["subscription"],
@@ -722,6 +730,9 @@ def savings_projection_table(summary, daily, clusters, pools, prices, windows,
             "project_days": project_days,
             "projected_saving_usd": proj["projected_saving_usd"],
             "projected_monthly_saving_usd": proj["projected_monthly_saving_usd"],
+            "annualized_projected_usd": (proj["projected_monthly_saving_usd"] * 12.0)
+            if proj["projected_monthly_saving_usd"] is not None else None,
+            "savings_rate_pct": srow_rate,
             "projection_assumption": proj["projection_assumption"],
         })
     df = pd.DataFrame(rows, columns=cols)
@@ -788,61 +799,238 @@ def add_actual_projection_chart(ws, chart_data):
 
 VERDICTS = ("SAVING", "FLAT", "COST_UP", "PRICE_MISSING", "NO_SPOT_COST")
 
+# Plain-English badge for FinOps / Business-Unit audiences. The raw `verdict`
+# column stays in every detail tab for engineers; these labels are for the
+# presentation tabs (headline, standings) so a non-platform reader understands
+# the status at a glance.
+VERDICT_LABEL = {
+    "SAVING": "Verified saving",
+    "FLAT": "Inconclusive",
+    "COST_UP": "Needs review",
+    "PRICE_MISSING": "Pricing gap",
+    "NO_SPOT_COST": "Not adopted",
+}
 
-def headline_rows(summary, projection, trend_days, top_n=5):
-    """One-row-per-verdict-counts + top savers, sized for a PPT snapshot."""
-    cols = ["clusters_with_spot_pools", "verdict",
-            "clusters", "total_last_%d_actual_spot_cost" % trend_days,
-            "total_last_%d_od_counterfactual" % trend_days,
-            "total_counterfactual_spot_saving", "total_projected_monthly_spot_saving"]
+
+def verdict_label(v):
+    """Map a raw verdict code to a human badge (falls back to the input)."""
+    return VERDICT_LABEL.get(str(v), str(v))
+
+
+def _safe_div(num, den):
+    if den in (0, None) or pd.isna(den) or float(den) == 0.0:
+        return None
+    return float(num) / float(den)
+
+
+def headline_rows(summary, projection, trend_days, top_n=8):
+    """KPI scorecard for a one-page presentation snapshot.
+
+    Layout (rows, read top-to-bottom):
+      1. Hero metrics: # spot clusters, verified-savers count, realized spot
+         savings (last N days), annualized run-rate, fleet savings rate %.
+      2. Per-cluster leaderboard (top_n by projected monthly saving) with a
+         human verdict badge, destined for the bar chart on the same sheet.
+      3. Verdict confidence tally (engineer-facing, kept for transparency).
+    """
+    ac = "last_%d_actual_spot_cost" % trend_days
+    cf = "last_%d_od_counterfactual" % trend_days
+    sv = "last_%d_estimated_spot_saving" % trend_days
+    share = "last_%d_spot_share" % trend_days
     s = summary if (summary is not None and not summary.empty) else pd.DataFrame()
     p = projection if (projection is not None and not projection.empty) else pd.DataFrame()
-    counts = {v: int((s["verdict"] == v).sum()) if not s.empty else 0 for v in VERDICTS}
-    rows = []
-    for v in VERDICTS:
-        rows.append({
-            "clusters_with_spot_pools": int(len(s)) if not s.empty else 0,
-            "verdict": v,
-            "clusters": counts[v],
-            "total_last_%d_actual_spot_cost" % trend_days:
-                float(s.loc[s["verdict"] == v, "last_%d_actual_spot_cost" % trend_days]
-                      .fillna(0.0).sum()) if not s.empty else 0.0,
-            "total_last_%d_od_counterfactual" % trend_days:
-                float(s.loc[s["verdict"] == v, "last_%d_od_counterfactual" % trend_days]
-                      .fillna(0.0).sum()) if not s.empty else 0.0,
-            "total_counterfactual_spot_saving":
-                float(s.loc[s["verdict"] == v, "last_%d_estimated_spot_saving" % trend_days]
-                      .fillna(0.0).sum()) if not s.empty else 0.0,
-            "total_projected_monthly_spot_saving":
-                float(p.loc[p["verdict"] == v, "projected_monthly_saving_usd"]
-                      .fillna(0.0).sum()) if not p.empty else 0.0,
-        })
-    out = pd.DataFrame(rows, columns=cols)
-    out = pd.concat([out, pd.DataFrame([{
-        "clusters_with_spot_pools": int(len(s)) if not s.empty else 0,
-        "verdict": "TOP %d SAVERS" % top_n,
-        "clusters": None,
-        "total_last_%d_actual_spot_cost" % trend_days: None,
-        "total_last_%d_od_counterfactual" % trend_days: None,
-        "total_counterfactual_spot_saving": None,
-        "total_projected_monthly_spot_saving": None,
-    }])], ignore_index=True)
+
+    n_spot = int(len(s)) if not s.empty else 0
+    n_saving = int((s["verdict"] == "SAVING").sum()) if not s.empty else 0
+    realized = float(s[sv].fillna(0.0).sum()) if not s.empty else 0.0
+    counter_actual = float(s[ac].fillna(0.0).sum()) if not s.empty else 0.0
+    counter_od = float(s[cf].fillna(0.0).sum()) if not s.empty else 0.0
+    proj_monthly = float(p["projected_monthly_saving_usd"].fillna(0.0).sum()) if not p.empty else 0.0
+    # Savings rate = total spot saving / total OD counterfactual (what the same
+    # spot usage would have cost on-demand). Most-quoted FinOps "savings %".
+    savings_rate = _safe_div(realized, counter_od)
+    savings_rate = savings_rate * 100.0 if savings_rate is not None else None
+
+    out = pd.DataFrame([
+        {"metric": "Spot clusters in scope", "value": n_spot,
+         "unit": "count", "detail": "clusters with a current spot node pool"},
+        {"metric": "Verified savers", "value": n_saving,
+         "unit": "count", "detail": "clusters whose counterfactual shows a net saving"},
+        {"metric": "Realized spot saving (last %d days)" % trend_days, "value": realized,
+         "unit": "usd", "detail": "retail counterfactual: OD cost - actual spot cost summed"},
+        {"metric": "Annualized run-rate", "value": realized / int(trend_days) * (12 * DAYS_PER_MONTH) if trend_days else None,
+         "unit": "usd", "detail": "realized / trend_days * 12 * 30.4375 (steady-state projection)"},
+        {"metric": "Fleet savings rate", "value": savings_rate,
+         "unit": "pct", "detail": "realized saving / OD counterfactual; spot discount realized"},
+        {"metric": "Additional projected saving (unused runway)", "value": proj_monthly,
+         "unit": "usd_month", "detail": "monthly $ if remaining priced OD nodes also move to spot"},
+    ])
+
+    # Leaderboard, one row per cluster, by projected monthly saving desc.
     if not p.empty:
-        top = p.sort_values("projected_monthly_saving_usd", ascending=False,
-                            na_position="last").head(top_n)
-        for _i, r in top.iterrows():
-            out = pd.concat([out, pd.DataFrame([{
-                "clusters_with_spot_pools": None,
-                "verdict": "  %s (%s)" % (r.get("cluster", ""), r.get("verdict", "")),
-                "clusters": None,
-                "total_last_%d_actual_spot_cost" % trend_days: None,
-                "total_last_%d_od_counterfactual" % trend_days: None,
-                "total_counterfactual_spot_saving": None,
-                "total_projected_monthly_spot_saving":
-                    float(r["projected_monthly_saving_usd"])
-                    if pd.notna(r.get("projected_monthly_saving_usd")) else None,
-            }])], ignore_index=True)
+        lb = p.sort_values("projected_monthly_saving_usd", ascending=False,
+                           na_position="last").head(top_n).copy()
+        lb_rows = []
+        for _i, r in lb.iterrows():
+            lb_rows.append({
+                "metric": "Ranked cluster: %s (%s)" % (r.get("cluster", ""), r.get("environment", "")),
+                "value": float(r["projected_monthly_saving_usd"])
+                if pd.notna(r.get("projected_monthly_saving_usd")) else None,
+                "unit": "usd_month",
+                "detail": "%s | %s spot nodes | %s" % (
+                    verdict_label(r.get("verdict", "")),
+                    int(r.get("current_spot_nodes", 0) or 0),
+                    r.get("location", "")),
+            })
+        out = pd.concat([out, pd.DataFrame([{
+            "metric": "--- Top %d clusters by projected monthly saving ---" % top_n,
+            "value": None, "unit": "", "detail": ""}]),
+            pd.DataFrame(lb_rows)], ignore_index=True)
+
+    # Confidence tally: raw verdict counts, for methodology transparency.
+    counts = {v: int((s["verdict"] == v).sum()) if not s.empty else 0 for v in VERDICTS}
+    out = pd.concat([out, pd.DataFrame([{
+        "metric": "--- Confidence tally (raw verdicts) ---",
+        "value": None, "unit": "", "detail": ""}])], ignore_index=True)
+    for v in VERDICTS:
+        if counts[v] and not s.empty:
+            detail = "actual $%.0f  OD-counterfactual $%.0f  saving $%.0f" % (
+                float(s.loc[s["verdict"] == v, ac].fillna(0.0).sum()),
+                float(s.loc[s["verdict"] == v, cf].fillna(0.0).sum()),
+                float(s.loc[s["verdict"] == v, sv].fillna(0.0).sum()))
+        else:
+            detail = ""
+        out = pd.concat([out, pd.DataFrame([{
+            "metric": "%s (%s)" % (verdict_label(v), v),
+            "value": counts[v], "unit": "count", "detail": detail}])],
+            ignore_index=True)
     return out
+
+
+def top_savers_rows(projection, trend_days, top_n=15):
+    """Per-cluster leaderboard by projected monthly saving, with annualized
+    savings-rate and a human verdict badge. One row per cluster."""
+    cols = ["cluster", "subscription", "environment", "location",
+            "current_regular_user_od_nodes", "current_spot_nodes",
+            "projected_monthly_saving_usd", "annualized_projected_usd",
+            "counterfactual_spot_saving_usd", "savings_rate_pct",
+            "status", "verdict"]
+    if projection is None or projection.empty:
+        return pd.DataFrame(columns=cols)
+    df = projection.copy()
+    df["annualized_projected_usd"] = df["projected_monthly_saving_usd"] * 12.0
+    if "od_counterfactual_usd" in df.columns:
+        df["savings_rate_pct"] = _safe_div_vec(
+            df["counterfactual_spot_saving_usd"], df["od_counterfactual_usd"])
+    else:
+        df["savings_rate_pct"] = None
+    df["status"] = df["verdict"].map(verdict_label).fillna(df["verdict"])
+    df = df.sort_values("projected_monthly_saving_usd", ascending=False,
+                        na_position="last").head(top_n).reset_index(drop=True)
+    return df[cols]
+
+
+def _safe_div_vec(num, den):
+    """Vectorized safe-division returning NaN where den is 0/NaN (not inf)."""
+    num = pd.to_numeric(num, errors="coerce")
+    den = pd.to_numeric(den, errors="coerce")
+    out = pd.Series([None] * len(num), index=num.index, dtype=object)
+    mask = den.notna() & (den != 0)
+    out.loc[mask] = num.loc[mask] / den.loc[mask]
+    return out
+
+
+def timeline_rows(daily, projection, project_days):
+    """Two-series timeline for a clean before/after savings visual:
+      - 'Actual total USD': actual end-to-end cost per day (fleet sum)
+      - 'OD counterfactual USD': what the same day would have cost if spot
+        spend had been on-demand (total - spot + od_counterfactual)
+      - 'Cumulative realized saving USD': running sum of estimated_spot_saving
+        from first spot spend (may stop rising once spot is steady state)
+      - 'Modeled future total USD': trailing-mean baseline minus projected
+        daily saving, extended forward project_days.
+    All series share one Date axis so the charts line up vertically.
+    """
+    cols = ["Date", "Actual total USD", "OD counterfactual USD",
+            "Cumulative realized saving USD", "Modeled future total USD"]
+    if daily is None or daily.empty:
+        return pd.DataFrame(columns=cols)
+    hist = daily.groupby("Date", dropna=False).agg({
+        "Total (USD)": "sum",
+        "actual_spot_cost": "sum",
+        "od_counterfactual": "sum",
+        "estimated_spot_saving": "sum",
+    }).reset_index().sort_values("Date").reset_index(drop=True)
+    rows = []
+    cum = 0.0
+    for _idx, r in hist.iterrows():
+        saving = float(r["estimated_spot_saving"]) if pd.notna(r["estimated_spot_saving"]) else 0.0
+        has_counter = pd.notna(r["od_counterfactual"]) and float(r["od_counterfactual"]) > 0
+        cum += saving if has_counter else 0.0
+        total = float(r["Total (USD)"])
+        spot = float(r["actual_spot_cost"]) if pd.notna(r["actual_spot_cost"]) else 0.0
+        counter = float(r["od_counterfactual"]) if pd.notna(r["od_counterfactual"]) else 0.0
+        rows.append({
+            "Date": r["Date"],
+            "Actual total USD": total,
+            "OD counterfactual USD": (total - spot + counter) if has_counter else None,
+            "Cumulative realized saving USD": cum if has_counter else None,
+            "Modeled future total USD": None,
+        })
+    max_date = parse_date(hist["Date"].max())
+    trailing = hist.tail(min(30, len(hist)))
+    base = float(trailing["Total (USD)"].mean()) if len(trailing) else 0.0
+    daily_saving = 0.0
+    if project_days and projection is not None and not projection.empty:
+        daily_saving = float(projection["projected_saving_usd"].fillna(0.0).sum()) / project_days
+    rows.append({
+        "Date": max_date.strftime("%Y-%m-%d"),
+        "Actual total USD": None, "OD counterfactual USD": None,
+        "Cumulative realized saving USD": None,
+        "Modeled future total USD": base,
+    })
+    for i in range(1, project_days + 1):
+        day = max_date + dt.timedelta(days=i)
+        rows.append({
+            "Date": day.strftime("%Y-%m-%d"),
+            "Actual total USD": None, "OD counterfactual USD": None,
+            "Cumulative realized saving USD": None,
+            "Modeled future total USD": max(0.0, base - daily_saving),
+        })
+    return pd.DataFrame(rows, columns=cols)
+
+
+def _leaderboard_chart(ws, chart_data, anchor):
+    """Bar chart of the leaderboard 'Ranked cluster' rows by monthly $.
+
+    Built directly with openpyxl (rather than excel.add_bar_chart) because the
+    leaderboard rows sit partway down the headline sheet and add_bar_chart
+    hard-codes min_row=1, which would pull in the hero-metric rows above.
+    """
+    if chart_data is None or chart_data.empty:
+        return None
+    lb = chart_data[chart_data["metric"].astype(str).str.startswith(
+        "Ranked cluster:")]
+    if lb.empty:
+        return None
+    n = len(lb)
+    data_col = list(chart_data.columns).index("value") + 1
+    cat_col = list(chart_data.columns).index("metric") + 1
+    # +2: +1 for 1-indexing, +1 to land on first data row below the header.
+    start_row = lb.index[0] + 2
+    end_row = start_row + n - 1
+    ch = BarChart()
+    ch.type = "col"
+    ch.title = "Top clusters by projected monthly saving"
+    ch.height, ch.width = 9, 24
+    ch.y_axis.title = "USD / month"
+    data = Reference(ws, min_col=data_col, max_col=data_col,
+                     min_row=start_row - 1, max_row=end_row)
+    cats = Reference(ws, min_col=cat_col, min_row=start_row, max_row=end_row)
+    ch.add_data(data, titles_from_data=True)
+    ch.set_categories(cats)
+    ws.add_chart(ch, anchor)
+    return ch
 
 
 def main(argv=None):
@@ -924,6 +1112,8 @@ def main(argv=None):
         summary, daily, clusters, pools, prices, windows, args.spot_trend_days,
         args.spot_baseline_days, args.project_days, args.project_move_od_nodes)
     chart_data = projection_chart_rows(daily, projection, args.project_days)
+    timeline = timeline_rows(daily, projection, args.project_days)
+    top_savers = top_savers_rows(projection, args.spot_trend_days)
     fleet_trend = fleet_trend_rows(daily)
     by_pool = pool_savings_rows(estimates, args.spot_trend_days)
     headline = headline_rows(summary, projection, args.spot_trend_days)
@@ -947,43 +1137,85 @@ def main(argv=None):
         "current spot node pool)" % ("spot-clusters only" if dropped_total
                                      else "all clusters already have a spot pool"),
         "",
-        "SpotSavingsHeadline is a one-page snapshot for presentations: cluster count, "
-        "verdict tally (SAVING / FLAT / COST_UP / PRICE_MISSING / NO_SPOT_COST), the "
-        "retail counterfactual totals, the total projected monthly spot saving, and "
-        "the top 5 savers.",
+        "WHAT THIS REPORT SHOWS",
+        "This workbook answers a single FinOps question for business owners: after our",
+        "AKS clusters added Azure Spot VMSS node pools, how much money have we saved,",
+        "and how much more could we save? Read the tabs left to right - they tell the",
+        "story from headline number down to raw evidence.",
         "",
-        "First spot adoption is inferred from the first day Cost Management reports",
-        "Spot spend above --spot-threshold-usd for the cluster. ARG exposes only",
-        "current node-pool state, so this is a cost-observed date, not the ARM",
-        "agent-pool creation timestamp.",
+        "  1. SpotSavingsHeadline  - the decision page. Hero metrics (realized saving,",
+        "     annualized run-rate, fleet savings rate %), a top-clusters bar chart, and",
+        "     a confidence tally. This is the one slide for execs.",
+        "  2. SpotTimeline         - the visual proof. Actual daily cost vs the on-demand",
+        "     counterfactual, plus cumulative realized savings climbing left to right.",
+        "  3. TopSavers            - the standings. One row per cluster, ranked by",
+        "     projected monthly and annualized saving, with a plain-English status.",
+        "  4. SavingsProjection   - where the remaining runway is: for each cluster, how",
+        "     many on-demand nodes could still move to spot and the modeled monthly $.",
+        "  5. BeforeSpot/AfterSpot - actual Cost Management spend split by pool before",
+        "     and after spot adoption, for due-diligence checks.",
+        "  6. SpotSavingsSummary   - per-cluster technical detail (windows, shares).",
+        "  7. ActualVsProjection + FleetDailyTrend - chart tabs.",
+        "  8. SpotSavingsDaily/ByPool + PriceReference/RawDailyCost - appendices.",
         "",
-        "The headline verdict uses a retrospective retail counterfactual: actual",
-        "Spot VMSS spend is converted to estimated spot node-hours using public",
-        "Retail Prices API spot rates, then priced at the public on-demand rate.",
-        "This approximates what the same spot usage would have cost as on-demand.",
+        "HOW WE COUNT SAVINGS (so the number is defensible)",
+        "We do NOT compare whole-cluster cost before vs after - that moves when",
+        "workload, autoscaling, reservations, disks or cluster fees change, so it would",
+        "pretend spot saved money it didn't. Instead we use a retail counterfactual: for",
+        "every dollar actually spent on Spot VMSS, we convert it to spot node-hours at",
+        "the public Azure Spot retail rate, then re-price those same hours at the public",
+        "On-Demand rate. The difference is the saving attributable purely to spot. This is",
+        "the industry-standard 'avoided cost' method and it isolates the spot decision.",
+        "Status badges: Verified saving / Inconclusive / Needs review / Pricing gap /",
+        "Not adopted.",
         "",
-        "Whole-cluster before/after total cost is included as context only. It can",
-        "move because workload, autoscaler capacity, RI/SP coverage, disks, IPs or",
-        "cluster fees changed; it is not used as the spot-savings verdict. In",
-        "SavingsProjection, actual_total_saving_vs_before_rate_usd applies the pre-spot",
-        "daily rate across the after-window day count, so it is workload-confounded.",
-        "",
-        "The BeforeSpot and AfterSpot tables use actual Cost Management rows by",
-        "PricingModel. current_nodes_now is current ARG inventory only; historical",
-        "node counts are not available from subscription-reader APIs. avg_node_equiv",
-        "is shown only as a cost/rate annotation where retail rates are available.",
-        "",
-        "Recent Cost Management data can lag, so the newest --trim-days are excluded",
-        "from averages by default. Currency: USD for actual CostUSD; retail rates use",
-        "--currency.",
+        "CONFIDENCE NOTES",
+        "- First spot adoption is the first day Cost Management reports Spot spend",
+        "  above --spot-threshold-usd; ARG only exposes current node-pool state, so this",
+        "  is a cost-observed date, not the ARM agent-pool creation timestamp.",
+        "- current_nodes_now is current ARG inventory; historical node counts are not",
+        "  available from subscription-reader APIs. avg_node_equiv is a cost/rate",
+        "  annotation where retail rates are available.",
+        "- Whole-cluster before/after totals appear in SavingsProjection as context only",
+        "  (labelled workload-confounded); they are NOT the spot-savings verdict.",
+        "- Recent Cost Management data can lag, so the newest --trim-days are excluded",
+        "  by default. Currency: USD for actual CostUSD; retail rates use --currency.",
     ])
-    excel.add_table(wb, "SpotSavingsHeadline", headline, section="summary",
-                    money_cols=("total_last_%d_actual_spot_cost" % args.spot_trend_days,
-                                "total_last_%d_od_counterfactual" % args.spot_trend_days,
-                                "total_counterfactual_spot_saving",
-                                "total_projected_monthly_spot_saving"),
-                    int_cols=("clusters_with_spot_pools", "clusters"),
-                    max_width=70)
+    ws_head = excel.add_table(wb, "SpotSavingsHeadline", headline, section="summary",
+                              money_cols=(),
+                              pct_cols=(),
+                              int_cols=(),
+                              max_width=95)
+    _leaderboard_chart(ws_head, headline, "F%d" % (len(headline) + 4))
+    ws_timeline = excel.add_table(wb, "SpotTimeline", timeline, section="summary",
+                                  money_cols=("Actual total USD", "OD counterfactual USD",
+                                              "Cumulative realized saving USD",
+                                              "Modeled future total USD"))
+    if len(timeline) > 1:
+        actual_col = list(timeline.columns).index("Actual total USD") + 1
+        counter_col = list(timeline.columns).index("OD counterfactual USD") + 1
+        cum_col = list(timeline.columns).index("Cumulative realized saving USD") + 1
+        excel.add_line_chart(ws_timeline, "Actual cost vs on-demand counterfactual",
+                             len(timeline) + 1, actual_col, counter_col,
+                             "I%d" % (len(timeline) + 4), y_title="USD / day")
+        excel.add_line_chart(ws_timeline, "Cumulative realized fleet savings",
+                             len(timeline) + 1, cum_col, cum_col,
+                             "I%d" % (len(timeline) + 22), y_title="USD")
+    ws_top = excel.add_table(wb, "TopSavers", top_savers, section="summary",
+                             money_cols=("projected_monthly_saving_usd",
+                                         "annualized_projected_usd",
+                                         "counterfactual_spot_saving_usd"),
+                             pct_cols=("savings_rate_pct",),
+                             int_cols=("current_regular_user_od_nodes", "current_spot_nodes"),
+                             fail_cols=("verdict",),
+                             fail_values=("COST_UP", "PRICE_MISSING"),
+                             warn_values=("FLAT", "NO_SPOT_COST"),
+                             max_width=100)
+    if len(top_savers) > 1:
+        monthly_col = list(top_savers.columns).index("projected_monthly_saving_usd") + 1
+        excel.add_bar_chart(ws_top, "Projected monthly saving by cluster",
+                            len(top_savers) + 1, monthly_col,
+                            "I%d" % (len(top_savers) + 4), y_title="USD / month")
     period_money = ("actual_vmss_cost_usd", "cluster_fee_usd", "end_to_end_cost_usd")
     period_ints = ("days_used", "current_nodes_now")
     excel.add_table(wb, "BeforeSpot", before_spot, section="summary",
@@ -997,8 +1229,9 @@ def main(argv=None):
                                 "actual_total_saving_vs_before_rate_usd",
                                 "actual_spot_cost_usd", "od_counterfactual_usd",
                                 "counterfactual_spot_saving_usd",
-                                "projected_saving_usd", "projected_monthly_saving_usd"),
-                    pct_cols=("actual_total_delta_pct",),
+                                "projected_saving_usd", "projected_monthly_saving_usd",
+                                "annualized_projected_usd"),
+                    pct_cols=("actual_total_delta_pct", "savings_rate_pct"),
                     int_cols=("before_days", "after_days",
                               "current_regular_user_od_nodes", "current_spot_nodes",
                               "project_days"),

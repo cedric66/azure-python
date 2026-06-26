@@ -156,12 +156,31 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   `priority == "spot"` over `cluster_id`, same pattern as
   `spot_cluster_report` `--only-spot-clusters`); `--include-all-clusters`
   restores the full fleet. **Trade-off:** a cluster whose spot pool was removed
-  but still shows Cost Mgmt spot spend is dropped under the default. Its first
-  summary tab is `SpotSavingsHeadline` (one-page PPT snapshot: verdict tally,
-  counterfactual totals, total projected monthly spot saving, top 5 savers),
-  followed by `BeforeSpot`, `AfterSpot`, `SavingsProjection`
-  and `ActualVsProjection`; current node counts are current ARG facts only,
-  while `avg_node_equiv_at_retail` is an explicitly labeled cost/rate estimate.
+  but still shows Cost Mgmt spot spend is dropped under the default. The report
+  is structured as a FinOps value story: its summary tab `SpotSavingsHeadline`
+  is a KPI scorecard (metric/value/unit/detail rows) carrying hero numbers
+  (Spot clusters in scope, Verified savers, Realized spot saving, Annualized
+  run-rate = realized * 365/trend_days, Fleet savings rate = realized /
+  OD-counterfactual, Additional projected saving from unused runway), followed
+  by a "Ranked cluster: <name> (<env>)" leaderboard block with an embedded bar
+  chart (`_leaderboard_chart` — built directly with openpyxl Reference because
+  the block sits partway down the sheet; `excel.add_bar_chart` hard-codes
+  min_row=1 and would pull in hero rows), then a confidence tally
+  ("%badge% (CODE)" rows with actual/counterfactual/saving detail). Next come
+  `SpotTimeline` (per-day Actual total / OD counterfactual / Cumulative
+  realized saving, plus a modeled-future column = future OD - projected saving;
+  two line charts) and `TopSavers` (ranked standings: projected monthly saving,
+  annualized_projected_usd = projected * 365/project_days, savings_rate_pct =
+  saving / OD-counterfactual, status = `verdict_label()` human badge; one bar
+  chart). `TopSavers` and `SavingsProjection` both add the annualized +
+  savings_rate_pct columns; savings_rate is fractional there (Excel % format)
+  but scaled to integer pct in the headline for readability. Then the original
+  `BeforeSpot`, `AfterSpot`, `SavingsProjection` and `ActualVsProjection`;
+  current node counts are current ARG facts only, while
+  `avg_node_equiv_at_retail` is an explicitly labeled cost/rate estimate.
+  `VERDICT_LABEL` maps the raw verdict codes to human badges:
+  SAVING->"Verified saving", FLAT->"Inconclusive", COST_UP->"Needs review",
+  PRICE_MISSING->"Pricing gap", NO_SPOT_COST->"Not adopted".
 - Control-plane-only AKS upgrade = PUT the managed cluster WITHOUT
   `properties.agentPoolProfiles`; pools upgrade individually via agentPool
   `orchestratorVersion`. One minor hop at a time.

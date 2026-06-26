@@ -1048,22 +1048,43 @@ def main():
                     for r in range(2, ws.max_row + 1)}
         _expect("PRICE_MISSING" in verdicts or "NO_SPOT_COST" in verdicts,
                 "smoke fixture should expose explicit spot-savings verdicts: %s" % verdicts)
-        for sheet in ("SpotSavingsHeadline", "BeforeSpot", "AfterSpot",
-                      "SavingsProjection", "ActualVsProjection"):
+        for sheet in ("SpotSavingsHeadline", "SpotTimeline", "TopSavers",
+                      "BeforeSpot", "AfterSpot", "SavingsProjection",
+                      "ActualVsProjection"):
             _expect(sheet in wb.sheetnames, "spot savings workbook missing %s" % sheet)
         ws_proj = wb["SavingsProjection"]
         headers = [ws_proj.cell(row=1, column=j).value for j in range(1, ws_proj.max_column + 1)]
-        _expect("projected_monthly_saving_usd" in headers,
-                "projection table should include modeled monthly saving")
+        for col in ("projected_monthly_saving_usd", "annualized_projected_usd",
+                    "savings_rate_pct"):
+            _expect(col in headers,
+                    "projection table should include %s for FinOps storytelling" % col)
         _expect(len(wb["ActualVsProjection"]._charts) >= 1,
                 "actual-vs-projection sheet should include a chart")
+        # SpotTimeline should carry the two value-story charts.
+        _expect(len(wb["SpotTimeline"]._charts) >= 2,
+                "SpotTimeline should have an actual-vs-counterfactual + cumulative chart")
+        # TopSavers standings sheet + its bar chart.
+        ws_top = wb["TopSavers"]
+        top_headers = [ws_top.cell(row=1, column=j).value
+                       for j in range(1, ws_top.max_column + 1)]
+        for col in ("cluster", "projected_monthly_saving_usd",
+                    "annualized_projected_usd", "savings_rate_pct", "status"):
+            _expect(col in top_headers, "TopSavers missing %s" % col)
+        _expect(len(ws_top._charts) >= 1, "TopSavers should include a bar chart")
+        # Headline is now a KPI scorecard with metric/value/unit/detail columns.
         head = wb["SpotSavingsHeadline"]
         head_headers = [head.cell(row=1, column=j).value
                         for j in range(1, head.max_column + 1)]
-        for col in ("clusters_with_spot_pools", "verdict",
-                    "total_projected_monthly_spot_saving"):
+        for col in ("metric", "value", "unit", "detail"):
             _expect(col in head_headers,
-                    "SpotSavingsHeadline missing %s" % col)
+                    "SpotSavingsHeadline scorecard missing %s" % col)
+        head_metrics = [head.cell(row=r, column=1).value for r in range(2, head.max_row + 1)]
+        _expect(any(str(m).startswith("Realized spot saving") for m in head_metrics),
+                "headline should surface a realized-savings hero metric: %s" % head_metrics)
+        _expect(any(str(m).startswith("Annualized run-rate") for m in head_metrics),
+                "headline should surface an annualized run-rate: %s" % head_metrics)
+        _expect(any(str(m).startswith("Fleet savings rate") for m in head_metrics),
+                "headline should surface a fleet savings rate %%: %s" % head_metrics)
 
     def chk_spot_only(wb):
         # default behaviour: clusters with no current spot pool are omitted
@@ -1078,15 +1099,17 @@ def main():
                 "spot-only summary should drop the cluster with no spot pool: %s" % kept)
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsHeadline", "BeforeSpot", "AfterSpot", "SavingsProjection",
-         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily",
+        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
+         "SavingsProjection", "BeforeSpot", "AfterSpot", "ActualVsProjection",
+         "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily",
          "SpotSavingsByPool", "RawDailyCost"],
         [chk_spot_savings, chk_spot_only])
 
     run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
                                                "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsHeadline", "BeforeSpot", "AfterSpot", "SavingsProjection",
-         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
+        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
+         "SavingsProjection", "BeforeSpot", "AfterSpot", "ActualVsProjection",
+         "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
         [chk_spot_savings, chk_spot_only])
 
     def chk_include_all(wb):
@@ -1101,8 +1124,9 @@ def main():
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0",
                               "--include-all-clusters"],
-        ["ReadMe", "SpotSavingsHeadline", "BeforeSpot", "AfterSpot", "SavingsProjection",
-         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
+        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
+         "SavingsProjection", "BeforeSpot", "AfterSpot", "ActualVsProjection",
+         "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
         [chk_include_all])
 
     run(utilization_idle, base + ["--all", "--days", "3"],
