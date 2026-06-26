@@ -1048,26 +1048,62 @@ def main():
                     for r in range(2, ws.max_row + 1)}
         _expect("PRICE_MISSING" in verdicts or "NO_SPOT_COST" in verdicts,
                 "smoke fixture should expose explicit spot-savings verdicts: %s" % verdicts)
-        for sheet in ("BeforeSpot", "AfterSpot", "SavingsProjection", "ActualVsProjection"):
+        for sheet in ("SpotSavingsHeadline", "BeforeSpot", "AfterSpot",
+                      "SavingsProjection", "ActualVsProjection"):
             _expect(sheet in wb.sheetnames, "spot savings workbook missing %s" % sheet)
-        ws = wb["SavingsProjection"]
-        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        ws_proj = wb["SavingsProjection"]
+        headers = [ws_proj.cell(row=1, column=j).value for j in range(1, ws_proj.max_column + 1)]
         _expect("projected_monthly_saving_usd" in headers,
                 "projection table should include modeled monthly saving")
         _expect(len(wb["ActualVsProjection"]._charts) >= 1,
                 "actual-vs-projection sheet should include a chart")
+        head = wb["SpotSavingsHeadline"]
+        head_headers = [head.cell(row=1, column=j).value
+                        for j in range(1, head.max_column + 1)]
+        for col in ("clusters_with_spot_pools", "verdict",
+                    "total_projected_monthly_spot_saving"):
+            _expect(col in head_headers,
+                    "SpotSavingsHeadline missing %s" % col)
+
+    def chk_spot_only(wb):
+        # default behaviour: clusters with no current spot pool are omitted
+        ws = wb["SpotSavingsSummary"]
+        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        cluster_col = headers.index("cluster") + 1
+        kept = {ws.cell(row=r, column=cluster_col).value
+                for r in range(2, ws.max_row + 1)}
+        _expect("aks-dev-01" in kept and "aks-prod-01" in kept,
+                "spot-only summary should keep the two spot-pool clusters: %s" % kept)
+        _expect("aks-dev-02" not in kept,
+                "spot-only summary should drop the cluster with no spot pool: %s" % kept)
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
-        ["ReadMe", "BeforeSpot", "AfterSpot", "SavingsProjection",
+        ["ReadMe", "SpotSavingsHeadline", "BeforeSpot", "AfterSpot", "SavingsProjection",
          "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily",
          "SpotSavingsByPool", "RawDailyCost"],
-        [chk_spot_savings])
+        [chk_spot_savings, chk_spot_only])
 
     run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
                                                "--trim-days", "0"],
-        ["ReadMe", "BeforeSpot", "AfterSpot", "SavingsProjection",
+        ["ReadMe", "SpotSavingsHeadline", "BeforeSpot", "AfterSpot", "SavingsProjection",
          "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
-        [chk_spot_savings])
+        [chk_spot_savings, chk_spot_only])
+
+    def chk_include_all(wb):
+        # --include-all-clusters restores the full fleet (incl. no-spot-pool cluster)
+        ws = wb["SpotSavingsSummary"]
+        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        cluster_col = headers.index("cluster") + 1
+        kept = {ws.cell(row=r, column=cluster_col).value
+                for r in range(2, ws.max_row + 1)}
+        _expect("aks-dev-02" in kept,
+                "--include-all-clusters should restore the no-spot-pool cluster: %s" % kept)
+
+    run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0",
+                              "--include-all-clusters"],
+        ["ReadMe", "SpotSavingsHeadline", "BeforeSpot", "AfterSpot", "SavingsProjection",
+         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend", "SpotSavingsDaily"],
+        [chk_include_all])
 
     run(utilization_idle, base + ["--all", "--days", "3"],
         ["ReadMe", "Utilization", "IdleCandidates", "Stopped", "Summary"])

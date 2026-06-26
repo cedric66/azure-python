@@ -151,7 +151,15 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   this is cost-observed adoption, not an ARM creation timestamp. The headline
   savings verdict is a retail-rate counterfactual for actual Spot VMSS spend;
   whole-cluster before/after total cost is contextual and workload-confounded.
-  Its first summary tabs are `BeforeSpot`, `AfterSpot`, `SavingsProjection`
+  **By default only clusters with a current spot node pool are kept** (spot-only
+  filter applied in `main()` right after `load_fleet()`, keyed on pool
+  `priority == "spot"` over `cluster_id`, same pattern as
+  `spot_cluster_report` `--only-spot-clusters`); `--include-all-clusters`
+  restores the full fleet. **Trade-off:** a cluster whose spot pool was removed
+  but still shows Cost Mgmt spot spend is dropped under the default. Its first
+  summary tab is `SpotSavingsHeadline` (one-page PPT snapshot: verdict tally,
+  counterfactual totals, total projected monthly spot saving, top 5 savers),
+  followed by `BeforeSpot`, `AfterSpot`, `SavingsProjection`
   and `ActualVsProjection`; current node counts are current ARG facts only,
   while `avg_node_equiv_at_retail` is an explicitly labeled cost/rate estimate.
 - Control-plane-only AKS upgrade = PUT the managed cluster WITHOUT

@@ -3,15 +3,19 @@
 This report answers: "after a cluster added spot node pools, did it actually
 save money?" It uses subscription-scope Cost Management queries only.
 
-Tabs: ReadMe, BeforeSpot, AfterSpot, SavingsProjection, ActualVsProjection,
-SpotSavingsSummary, FleetDailyTrend, SpotSavingsDaily, SpotSavingsByPool,
-PriceReference, RawDailyCost.
+Tabs: ReadMe, SpotSavingsHeadline, BeforeSpot, AfterSpot, SavingsProjection,
+ActualVsProjection, SpotSavingsSummary, FleetDailyTrend, SpotSavingsDaily,
+SpotSavingsByPool, PriceReference, RawDailyCost.
+
+By default only clusters that currently have a spot node pool are included (a
+crisp presentation view). Use --include-all-clusters to restore full-fleet behavior.
 
 Usage:
   python spot_savings.py --all
   python spot_savings.py --env dev --spot-trend-days 30 --spot-baseline-days 30
   python spot_savings.py --cluster aks-dev-01 --lookback-days 120
   python spot_savings.py --cluster aks-dev-01 --project-move-od-nodes 3
+  python spot_savings.py --all --include-all-clusters
 """
 import datetime as dt
 from collections import defaultdict
@@ -782,6 +786,65 @@ def add_actual_projection_chart(ws, chart_data):
     return ch
 
 
+VERDICTS = ("SAVING", "FLAT", "COST_UP", "PRICE_MISSING", "NO_SPOT_COST")
+
+
+def headline_rows(summary, projection, trend_days, top_n=5):
+    """One-row-per-verdict-counts + top savers, sized for a PPT snapshot."""
+    cols = ["clusters_with_spot_pools", "verdict",
+            "clusters", "total_last_%d_actual_spot_cost" % trend_days,
+            "total_last_%d_od_counterfactual" % trend_days,
+            "total_counterfactual_spot_saving", "total_projected_monthly_spot_saving"]
+    s = summary if (summary is not None and not summary.empty) else pd.DataFrame()
+    p = projection if (projection is not None and not projection.empty) else pd.DataFrame()
+    counts = {v: int((s["verdict"] == v).sum()) if not s.empty else 0 for v in VERDICTS}
+    rows = []
+    for v in VERDICTS:
+        rows.append({
+            "clusters_with_spot_pools": int(len(s)) if not s.empty else 0,
+            "verdict": v,
+            "clusters": counts[v],
+            "total_last_%d_actual_spot_cost" % trend_days:
+                float(s.loc[s["verdict"] == v, "last_%d_actual_spot_cost" % trend_days]
+                      .fillna(0.0).sum()) if not s.empty else 0.0,
+            "total_last_%d_od_counterfactual" % trend_days:
+                float(s.loc[s["verdict"] == v, "last_%d_od_counterfactual" % trend_days]
+                      .fillna(0.0).sum()) if not s.empty else 0.0,
+            "total_counterfactual_spot_saving":
+                float(s.loc[s["verdict"] == v, "last_%d_estimated_spot_saving" % trend_days]
+                      .fillna(0.0).sum()) if not s.empty else 0.0,
+            "total_projected_monthly_spot_saving":
+                float(p.loc[p["verdict"] == v, "projected_monthly_saving_usd"]
+                      .fillna(0.0).sum()) if not p.empty else 0.0,
+        })
+    out = pd.DataFrame(rows, columns=cols)
+    out = pd.concat([out, pd.DataFrame([{
+        "clusters_with_spot_pools": int(len(s)) if not s.empty else 0,
+        "verdict": "TOP %d SAVERS" % top_n,
+        "clusters": None,
+        "total_last_%d_actual_spot_cost" % trend_days: None,
+        "total_last_%d_od_counterfactual" % trend_days: None,
+        "total_counterfactual_spot_saving": None,
+        "total_projected_monthly_spot_saving": None,
+    }])], ignore_index=True)
+    if not p.empty:
+        top = p.sort_values("projected_monthly_saving_usd", ascending=False,
+                            na_position="last").head(top_n)
+        for _i, r in top.iterrows():
+            out = pd.concat([out, pd.DataFrame([{
+                "clusters_with_spot_pools": None,
+                "verdict": "  %s (%s)" % (r.get("cluster", ""), r.get("verdict", "")),
+                "clusters": None,
+                "total_last_%d_actual_spot_cost" % trend_days: None,
+                "total_last_%d_od_counterfactual" % trend_days: None,
+                "total_counterfactual_spot_saving": None,
+                "total_projected_monthly_spot_saving":
+                    float(r["projected_monthly_saving_usd"])
+                    if pd.notna(r.get("projected_monthly_saving_usd")) else None,
+            }])], ignore_index=True)
+    return out
+
+
 def main(argv=None):
     p = base_parser("AKS spot savings after adoption")
     p.add_argument("--spot-trend-days", type=int, default=30,
@@ -804,6 +867,9 @@ def main(argv=None):
                    help="days for the modeled future projection")
     p.add_argument("--project-move-od-nodes", type=float, default=None,
                    help="override how many current regular Linux User OD nodes to model moving to spot per cluster")
+    p.add_argument("--include-all-clusters", action="store_true",
+                   help="include clusters with no current spot node pool (default is spot-clusters "
+                        "only, for a crisp savings view); use this to restore full-fleet behavior")
     args = p.parse_args(argv)
 
     today = dt.date.today()
@@ -817,6 +883,17 @@ def main(argv=None):
     session = connect(min_interval=0.15)
     env_keys = [k.strip() for k in args.env_tag_keys.split(",") if k.strip()]
     clusters, pools = load_fleet(session, sel, env_filter, args.include_unknown_env, env_keys)
+    dropped_total = 0
+    if not args.include_all_clusters:
+        spot_cluster_ids = {p["cluster_id"] for p in pools
+                            if str(p.get("priority", "")).lower() == "spot"}
+        kept = [c for c in clusters if c["id"] in spot_cluster_ids]
+        dropped_total = len(clusters) - len(kept)
+        clusters = kept
+        pools = [p for p in pools if p["cluster_id"] in spot_cluster_ids]
+        log("Spot-only filter: %d cluster(s) with a current spot node pool kept, "
+            "%d without dropped (use --include-all-clusters to include them)"
+            % (len(clusters), dropped_total))
     if not clusters:
         log("No clusters in scope.")
         return
@@ -849,6 +926,7 @@ def main(argv=None):
     chart_data = projection_chart_rows(daily, projection, args.project_days)
     fleet_trend = fleet_trend_rows(daily)
     by_pool = pool_savings_rows(estimates, args.spot_trend_days)
+    headline = headline_rows(summary, projection, args.spot_trend_days)
     prdf = price_reference_rows(prices) if prices else pd.DataFrame(
         columns=["region", "vm_size", "od_hr", "spot_hr", "discount %"])
 
@@ -862,8 +940,17 @@ def main(argv=None):
         "Generated: %s   Scope: %s   Daily cost window: %s to %s" %
         (dt.datetime.now().strftime("%Y-%m-%d %H:%M"), env_filter or "all",
          d_from, d_to),
-        "Clusters in scope: %d   Cost Management calls: %d   Trailing days trimmed: %d" %
-        (len(clusters), cost["calls"], args.trim_days),
+        "Clusters in scope: %d (%d with a current spot node pool)   Cost Management "
+        "calls: %d   Trailing days trimmed: %d" %
+        (len(clusters) + dropped_total, len(clusters), cost["calls"], args.trim_days),
+        "Scope filter: %s (use --include-all-clusters to include clusters with no "
+        "current spot node pool)" % ("spot-clusters only" if dropped_total
+                                     else "all clusters already have a spot pool"),
+        "",
+        "SpotSavingsHeadline is a one-page snapshot for presentations: cluster count, "
+        "verdict tally (SAVING / FLAT / COST_UP / PRICE_MISSING / NO_SPOT_COST), the "
+        "retail counterfactual totals, the total projected monthly spot saving, and "
+        "the top 5 savers.",
         "",
         "First spot adoption is inferred from the first day Cost Management reports",
         "Spot spend above --spot-threshold-usd for the cluster. ARG exposes only",
@@ -890,6 +977,13 @@ def main(argv=None):
         "from averages by default. Currency: USD for actual CostUSD; retail rates use",
         "--currency.",
     ])
+    excel.add_table(wb, "SpotSavingsHeadline", headline, section="summary",
+                    money_cols=("total_last_%d_actual_spot_cost" % args.spot_trend_days,
+                                "total_last_%d_od_counterfactual" % args.spot_trend_days,
+                                "total_counterfactual_spot_saving",
+                                "total_projected_monthly_spot_saving"),
+                    int_cols=("clusters_with_spot_pools", "clusters"),
+                    max_width=70)
     period_money = ("actual_vmss_cost_usd", "cluster_fee_usd", "end_to_end_cost_usd")
     period_ints = ("days_used", "current_nodes_now")
     excel.add_table(wb, "BeforeSpot", before_spot, section="summary",
