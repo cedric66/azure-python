@@ -285,6 +285,36 @@ def test_vmss_churn_events_keeps_compute_drops_containerservice():
            "last_event_ts should be the most recent kept event")
 
 
+def test_monthly_savings_three_month_rollup_and_flag():
+    # April carries no spot; adoption starts 2026-05-01, so April -> "No", May/June -> "Yes".
+    daily = daily_rows("2026-04-01", 88, 30)            # 2026-04-01 .. 2026-06-27
+    estimates = estimate_rows("2026-04-01", 88, 30)
+    annotated, _summary = spot_savings.annotate_daily_and_summary(
+        daily, estimates, [CLUSTER], FULL_POOLS, trend_days=30, baseline_days=30)
+
+    monthly = spot_savings.monthly_savings_rows(annotated, dt.date(2026, 6, 27))
+    expect(set(monthly["month"]) == {"2026-04", "2026-05", "2026-06"},
+           "monthly roll-up should cover the last 3 calendar months: %s" %
+           sorted(set(monthly["month"])))
+    expect("(all clusters)" in set(monthly["cluster"]),
+           "monthly roll-up should include a fleet-total row")
+
+    per = monthly[monthly["cluster"] == "aks-dev-01"].set_index("month")
+    apr, may, jun = per.loc["2026-04"], per.loc["2026-05"], per.loc["2026-06"]
+    expect(apr["savings_from_spot_pool"] == "No (no spot spend)",
+           "a month with no spot spend must flag the saving as not spot-attributable")
+    expect(float(apr["estimated_saving_usd"]) == 0.0 and pd.isna(apr["savings_rate_pct"]),
+           "a no-spot month should show zero saving and a blank savings rate")
+    expect(may["savings_from_spot_pool"] == "Yes" and may["month_status"] == "full",
+           "a completed month with spot spend should be Yes + full")
+    expect(abs(float(may["spot_cost_usd"]) - 310.0) < 1e-6,
+           "May spot fact = 31 days * $10: %s" % may["spot_cost_usd"])
+    expect(abs(float(may["estimated_saving_usd"]) - 930.0) < 1e-6,
+           "May saving = 31 days * $30: %s" % may["estimated_saving_usd"])
+    expect(jun["month_status"] == "MTD (partial)",
+           "the current calendar month should be marked month-to-date (partial)")
+
+
 def main():
     test_counterfactual_saving_even_when_total_grows()
     test_before_after_projection_tables_and_chart()
@@ -292,6 +322,7 @@ def main():
     test_no_spot_cost()
     test_coverage_risk_recommendations_and_realized()
     test_vmss_churn_events_keeps_compute_drops_containerservice()
+    test_monthly_savings_three_month_rollup_and_flag()
     print("\nALL SPOT-SAVINGS TESTS PASSED")
 
 

@@ -182,7 +182,16 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   price-cap, plus `vmss_churn_approx` and an additive `_risk_band` HIGH/MED/LOW -
   reuses the spot-risk spirit of `spot_cluster_report.assess_clusters`);
   `RealizedSavings` (`realized_savings_rows`: slim fact-vs-model per cluster with
-  a `verdict_label` badge). Then `SpotTimeline` (per-day Actual total / OD
+  a `verdict_label` badge) and `MonthlySavings` (`monthly_savings_rows`: last 3
+  calendar months - a fleet-total set of rows then per-cluster - with spot fact /
+  od counterfactual / saving / `savings_rate_pct` per month; `month_status` marks the
+  current month "MTD (partial)"; `savings_from_spot_pool` is a Yes/No flag, "Yes"
+  only when that month carried actual Spot VMSS spend > `SPOT_THRESHOLD_USD`, else
+  "No (no spot spend)" - it tracks spot attribution, NOT whether a saving could be
+  priced, so the no-retail-prices path still shows "Yes" with a zero saving). To keep
+  the 3-month roll-up populated, `analysis_window` floors the default daily-cost
+  lookback at `MONTHLY_LOOKBACK_DAYS` (92); an explicit `--lookback-days` still wins.
+  Then `SpotTimeline` (per-day Actual total / OD
   counterfactual / Cumulative realized saving + modeled-future column; two line
   charts), `TopSavers` (ranked standings: projected/annualized monthly saving,
   `savings_rate_pct`, status badge; bar chart) and `SavingsByEnv` (prod vs non-

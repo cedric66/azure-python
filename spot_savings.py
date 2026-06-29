@@ -4,7 +4,7 @@ This report answers: "after a cluster added spot node pools, did it actually
 save money?" It uses subscription-scope Cost Management queries only.
 
 Story tabs: ReadMe, Scorecard, Recommendations, CoverageRisk, RealizedSavings,
-SpotTimeline, TopSavers, SavingsByEnv. Evidence appendix: SavingsProjection,
+MonthlySavings, SpotTimeline, TopSavers, SavingsByEnv. Evidence appendix: SavingsProjection,
 BeforeSpot, AfterSpot, ActualVsProjection, SpotSavingsSummary, FleetDailyTrend,
 SpotSavingsDaily, SpotSavingsByPool, PriceReference, RawDailyCost.
 
@@ -39,6 +39,10 @@ from spot_cluster_report import (PM_ORDER, chunks, pool_from_resource_id,
 RG_CHUNK = 30
 DAYS_PER_MONTH = 30.4375
 SPOT_THRESHOLD_USD = 0.01
+# Floor on the daily-cost lookback so the MonthlySavings tab always has a full
+# quarter (2 complete calendar months + the current month-to-date) to roll up.
+MONTHLY_LOOKBACK_DAYS = 92
+MONTHLY_MONTHS = 3
 
 
 def date_range(d_from, d_to):
@@ -58,7 +62,9 @@ def parse_date(value):
 
 def analysis_window(today, trend_days, baseline_days, trim_days, lookback_days):
     d_to = today - dt.timedelta(days=max(0, trim_days))
-    lookback = lookback_days or (trend_days + baseline_days)
+    # Default lookback covers baseline+trend, but never less than a full quarter so
+    # the MonthlySavings 3-month roll-up is populated; an explicit --lookback-days wins.
+    lookback = lookback_days or max(trend_days + baseline_days, MONTHLY_LOOKBACK_DAYS)
     lookback = max(1, lookback)
     d_from = d_to - dt.timedelta(days=lookback - 1)
     return d_from, d_to
@@ -1146,6 +1152,54 @@ def realized_savings_rows(summary, trend_days):
                            na_position="last").reset_index(drop=True)
 
 
+def monthly_savings_rows(daily, today, months=MONTHLY_MONTHS,
+                         spot_threshold=SPOT_THRESHOLD_USD):
+    """Calendar-month roll-up of spot savings for the last `months` months - a fleet
+    total per month followed by per-cluster rows. Spot spend is the hard billed fact;
+    od_counterfactual / saving are retail-rate estimates (0 when prices are unavailable).
+    The current calendar month is month-to-date (partial). savings_from_spot_pool is
+    'Yes' only when that month actually carried Spot VMSS spend, so a 'No (no spot spend)'
+    month makes plain that its (zero) saving is not attributable to a spot node pool."""
+    cols = ["month", "cluster", "subscription", "environment", "month_status",
+            "spot_cost_usd", "od_counterfactual_usd", "estimated_saving_usd",
+            "savings_rate_pct", "total_cost_usd", "savings_from_spot_pool"]
+    if daily is None or daily.empty:
+        return pd.DataFrame(columns=cols)
+    d = daily.copy()
+    d["month"] = d["Date"].str[:7]
+    keep = sorted(d["month"].unique())[-months:]   # last N calendar months in window
+    d = d[d["month"].isin(keep)]
+    cur_month = today.strftime("%Y-%m")
+    agg = {"actual_spot_cost": "sum", "od_counterfactual": "sum",
+           "estimated_spot_saving": "sum", "Total (USD)": "sum"}
+    per = d.groupby(["cluster", "subscription", "environment", "month"],
+                    dropna=False).agg(agg).reset_index()
+    fleet = d.groupby("month", dropna=False).agg(agg).reset_index()
+    fleet["cluster"], fleet["subscription"], fleet["environment"] = \
+        "(all clusters)", "", "(fleet)"
+
+    def _emit(frame):
+        out = []
+        for _, r in frame.iterrows():
+            spot, cf, sv = (float(r["actual_spot_cost"]), float(r["od_counterfactual"]),
+                            float(r["estimated_spot_saving"]))
+            out.append({
+                "month": r["month"], "cluster": r["cluster"],
+                "subscription": r["subscription"], "environment": r["environment"],
+                "month_status": "MTD (partial)" if r["month"] == cur_month else "full",
+                "spot_cost_usd": spot, "od_counterfactual_usd": cf,
+                "estimated_saving_usd": sv, "savings_rate_pct": _safe_div(sv, cf),
+                "total_cost_usd": float(r["Total (USD)"]),
+                "savings_from_spot_pool": "Yes" if spot > spot_threshold
+                else "No (no spot spend)",
+            })
+        return out
+
+    rows = _emit(fleet.sort_values("month"))
+    rows += _emit(per.sort_values(["cluster", "month"]))
+    return pd.DataFrame(rows, columns=cols)
+
+
 def scorecard_cards(summary, projection, daily, estimates, coverage_risk, trend_days):
     """Exec KPI cards (list of dicts for excel.add_scorecard). Separates the hard
     billed fact (invoiced Spot spend) from the retail-model estimate (avoided cost),
@@ -1231,7 +1285,8 @@ def main(argv=None):
     p.add_argument("--spot-baseline-days", type=int, default=30,
                    help="days immediately before first observed spot cost for total-cost context")
     p.add_argument("--lookback-days", type=int, default=0,
-                   help="daily cost lookback; default is baseline + trend days")
+                   help="daily cost lookback; default is max(baseline + trend, 92) so the "
+                        "MonthlySavings 3-month roll-up is fully populated")
     p.add_argument("--trim-days", type=int, default=2,
                    help="drop the most recent N days because Cost Management data can lag")
     p.add_argument("--min-baseline-days", type=int, default=3,
@@ -1338,6 +1393,7 @@ def main(argv=None):
     recommendations = recommendation_rows(clusters, pools, prices, risk_by_cluster,
                                           args.spot_trend_days)
     realized = realized_savings_rows(summary, args.spot_trend_days)
+    monthly = monthly_savings_rows(daily, today)
     cards = scorecard_cards(summary, projection, daily, estimates, coverage_risk,
                             args.spot_trend_days)
     prdf = price_reference_rows(prices) if prices else pd.DataFrame(
@@ -1381,6 +1437,10 @@ def main(argv=None):
         "     mixes real evictions with autoscale-down - not separable at Reader scope).",
         "  4. RealizedSavings - per-cluster fact-vs-model: invoiced Spot $ (billed fact)",
         "     beside the OD counterfactual and saving (retail estimates), with a badge.",
+        "  5. MonthlySavings  - last 3 calendar months (fleet total then per-cluster):",
+        "     spot spend, counterfactual, saving and savings rate per month. The current",
+        "     month is month-to-date (partial); savings_from_spot_pool flags Yes only when",
+        "     that month actually carried Spot VMSS spend (else 'No (no spot spend)').",
         "",
         "EVIDENCE (appendix): SpotTimeline (actual vs counterfactual + cumulative saving),",
         "TopSavers / SavingsByEnv standings, SavingsProjection runway, BeforeSpot/AfterSpot",
@@ -1435,6 +1495,12 @@ def main(argv=None):
                     pct_cols=("savings_rate_pct",),
                     fail_cols=("verdict",), fail_values=("COST_UP", "PRICE_MISSING"),
                     warn_values=("FLAT", "NO_SPOT_COST"), max_width=90)
+    excel.add_table(wb, "MonthlySavings", monthly, section="summary",
+                    money_cols=("spot_cost_usd", "od_counterfactual_usd",
+                                "estimated_saving_usd", "total_cost_usd"),
+                    pct_cols=("savings_rate_pct",),
+                    fail_cols=("savings_from_spot_pool",),
+                    warn_values=("No (no spot spend)",), fail_values=(), max_width=70)
     ws_timeline = excel.add_table(wb, "SpotTimeline", timeline, section="summary",
                                   money_cols=("Actual total USD", "OD counterfactual USD",
                                               "Cumulative realized saving USD",

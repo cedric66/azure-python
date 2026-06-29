@@ -1111,6 +1111,27 @@ def main():
                       for j in range(1, wb["RealizedSavings"].max_column + 1)]
         for col in ("invoiced_spot_fact_usd", "od_counterfactual_model_usd", "status"):
             _expect(col in rz_headers, "RealizedSavings missing %s" % col)
+        # MonthlySavings: last-3-calendar-month roll-up with the spot-attribution flag.
+        ms = wb["MonthlySavings"]
+        ms_headers = [ms.cell(row=1, column=j).value
+                      for j in range(1, ms.max_column + 1)]
+        for col in ("month", "month_status", "spot_cost_usd", "estimated_saving_usd",
+                    "savings_from_spot_pool"):
+            _expect(col in ms_headers, "MonthlySavings missing %s" % col)
+        m_col = ms_headers.index("month") + 1
+        flag_col = ms_headers.index("savings_from_spot_pool") + 1
+        clu_col = ms_headers.index("cluster") + 1
+        ms_months = {ms.cell(row=r, column=m_col).value for r in range(2, ms.max_row + 1)}
+        _expect(1 <= len(ms_months) <= 3,
+                "MonthlySavings should cover at most 3 calendar months: %s" % ms_months)
+        ms_flags = {ms.cell(row=r, column=flag_col).value for r in range(2, ms.max_row + 1)}
+        _expect(ms_flags <= {"Yes", "No (no spot spend)"},
+                "savings_from_spot_pool must be a Yes/No flag: %s" % ms_flags)
+        _expect("Yes" in ms_flags,
+                "fixture spot clusters should yield a spot-attributable month: %s" % ms_flags)
+        ms_clusters = {ms.cell(row=r, column=clu_col).value for r in range(2, ms.max_row + 1)}
+        _expect("(all clusters)" in ms_clusters,
+                "MonthlySavings should include a fleet-total row: %s" % ms_clusters)
         # SavingsByEnv rolls clusters up to prod vs non-prod tiers.
         _expect("SavingsByEnv" in wb.sheetnames,
                 "spot savings workbook should include the SavingsByEnv tier roll-up")
@@ -1135,7 +1156,7 @@ def main():
                 "default spot-savings should keep the full fleet in scope: %s" % kept)
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
-        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings",
+        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings", "MonthlySavings",
          "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
          "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily", "SpotSavingsByPool", "RawDailyCost"],
@@ -1143,7 +1164,7 @@ def main():
 
     run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
                                                "--trim-days", "0"],
-        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings",
+        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings", "MonthlySavings",
          "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
          "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily"],
@@ -1163,7 +1184,7 @@ def main():
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0",
                               "--only-spot-clusters"],
-        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings",
+        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings", "MonthlySavings",
          "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
          "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily"],
