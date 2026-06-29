@@ -42,7 +42,10 @@ azrep/               shared library
   armextras.py       cluster_metrics() (Monitor platform metrics), activity_events()
                      (ContainerService control-plane), vmss_churn_events() (node-RG
                      Microsoft.Compute VMSS delete/deallocate eviction proxy),
-                     aks_supported_versions(), node_image_date(), retail_vm_prices()
+                     aks_supported_versions(), node_image_date(), retail_vm_prices(),
+                     _SKU_CAP static capability map + sku_capabilities() /
+                     ephemeral_os_disk_eligible() / modernize_sku() (same-vCPU/mem
+                     newer-gen SKU finder; used by cost_efficiency)
   excel.py           new_workbook(), add_readme(), add_table() (sections: intro/summary/
                      detail/reference; fail/warn conditional formatting; money/pct/int),
                      add_scorecard() (merged-cell KPI cards w/ RAG fill, for exec
@@ -99,7 +102,8 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | policy-components | policy_components.py | Policy assignments + policySetDefinition + PolicyInsights componentPolicyStates (+ policyStates fallback) + ARG; drills ONE initiative -> groups -> policies -> non-compliant components |
 | network | network_ip_capacity.py | ARG only |
 | tags | tag_chargeback.py | ARG only |
-| optimization | optimization_report.py | Cost Mgmt + ARG + Monitor |
+| optimization | optimization_report.py | Cost Mgmt + ARG + Monitor; candidate queue incl. CONTROL_PLANE_TIER (TIER_HOURLY rate) + OFFHOURS_STOP_CANDIDATE (--offhours-pct 0.65, --no-tier-candidates gates the tier type) |
+| efficiency | cost_efficiency.py | ARG + Retail Prices only; config-driven levers beyond spot: control-plane tier, ephemeral OS disk, SKU modernization, autoscaler/floor hygiene, pool fragmentation; layered (Scorecard -> per-lever summary tabs -> Recommendations -> NodePools ref) |
 | rearch | subscription_rearch.py | ARG (all resources + advisorresources) + Cost Mgmt (per-ResourceId+ServiceName) + Advisor; ONE sub only; FINDINGS engine + .md narrative (Mermaid) |
 | container-eol | container_os_eol.py | endoflife.date (no Azure) |
 | aks-lifecycle | aks_lifecycle.py | MS Learn pages + GitHub releases (no Azure) |
@@ -174,6 +178,35 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 - Spot priority is IMMUTABLE on an existing agent pool — spot conversion always
   means create a new spot pool + shrink the OD pool (spot-sim does this). AKS
   auto-adds the `scalesetpriority=spot:NoSchedule` taint; don't send it in PUTs.
+- `optimization` candidate loop now includes two config-driven types:
+  `CONTROL_PLANE_TIER` (non-prod on Standard/Premium downgrades to Free; prod on
+  Free surfaces a no-SLA risk note with NO saving; saving = TIER_HOURLY rate *
+  HOURS_PER_MONTH) and `OFFHOURS_STOP_CANDIDATE` (non-prod + running + cost >=
+  min; saving = avg_full * `--offhours-pct` default 0.65). Stop != free. Priced
+  from config + a static TIER_HOURLY map = {Free:0, Standard:0.012, Premium:0.60}
+  (verify real pricing); `--no-tier-candidates` gates the tier type. `CLUSTER_360`
+  does NOT reuse these (it stays on its own category set). `CLUSTER_360` DOES reuse
+  `governance.CHECKS`/`utilization_idle.classify`/etc as before.
+- `efficiency` (cost_efficiency) is the ARG-cheap layered report for config-driven
+  levers: `ControlPlaneTier`/`EphemeralOSDisk`/`SKUModernization`/`AutoscalerHygiene`/
+  `PoolFragmentation` summary tabs (built in that CREATE order - `excel.save` sort is
+  STABLE so that's the display order), then `Recommendations` detail, then `NodePools`
+  reference. The tier lever mirrors the optimization TIER_HOURLY + 730. The ephemeral
+  lever and SKU modernization share the `_SKU_CAP` map (`armextras.sku_capabilities`):
+  keys are LOWERCASE keeping underscores e.g. `standard_d4s_v3` (Azure SKU naming is
+  case-insensitive but the armSkuName Retail Prices form keeps underscores, first
+  letter capitalised - `azure_sku()` is the reverse). `ephemeral_os_disk_eligible`
+  needs `max(cache_gb,temp_gb) >= os_disk_gb` (default 128); v5 SKUs have temp_gb=0
+  (ephemeral uses cache only) so cache_gb is the gate. `modernize_sku` finds the
+  cheapest same-vCPU/mem/SAME-ARCH newer-gen SKU strictly cheaper than current -
+  ARM64 (Dps_v5) is matched but surfaced as a separate "needs multi-arch images"
+  caveat (same convention as spot reports, never auto-recommended). ALL these are
+  best-effort public specs that DRIFT; every recommendation carries a
+  `verify_before_move` caveat (the report is screening, NOT an action plan).
+  Keyed by `cluster_id` (pool `cluster_id` == `c["id"]`) and `is_prod`. The smoke
+  `fake_retail_get` is SKU-aware (D4s_v3 + a cheaper D4s_v5) so `SKUModernization`
+  and `EphemeralOSDisk` are non-empty; `chk_eff` asserts DOWNGRADE TO FREE + a
+  non-empty EphemeralOSDisk.
 - `spot-savings` infers spot adoption from the first daily Cost Management row
   with Spot spend above a threshold (`first_spot_dates`). ARG has only current
   node-pool state, so this is cost-observed adoption, not an ARM creation
@@ -292,6 +325,26 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   but `references` is a LIST of {url, source, tags} — the 1.x
   `references.referenceData` shape is gone. The online path is mocked in
   tests/test_vulnerability_report.py (`_fake_requests_get`) with real 2.0 shapes.
+- `vulnerabilities` classifier (`classify`) is deterministic and
+  PRECEDENCE-ORDERED, first match wins, each branch returning a 4-tuple
+  `(layer, confidence, evidence, signal)`: json_rule -> runtime_name (runtime/
+  framework by package NAME, matched on pkg+purl+CPE-product only, NEVER the NVD
+  description) -> pkgtype_os -> pkgtype_app -> cpe_o/cpe_a -> app_path/distro_path
+  -> none. Order is load-bearing: a runtime shipped as an OS package (a JRE via
+  apt) must read as `platform`, so runtime_name is checked BEFORE pkgtype_os.
+  Two real-Prisma bugs are fixed here and MUST stay fixed: (1) platform matching
+  no longer sees the free-text CVE description (a writeup mentioning "python"
+  used to mislabel OS packages), (2) a populated `distro`/OS column is NOT a
+  standalone base signal — Prisma carries it on every row, so app findings were
+  dragged to base_image; base now needs an OS-shaped path (`/usr/lib` etc.) or
+  PURL (`pkg:deb/rpm/apk`). The `signal` token + a `needs_review` flag
+  (unknown or confidence<0.6) are columns on the `Classification` tab. Charts:
+  `ByLayer` has a findings-by-layer bar chart; new `BySeverity` summary tab is a
+  severity×layer pivot (`norm_severity` bands Critical/High/Medium/Low/Unknown)
+  with a clustered bar via `excel.add_grouped_bar_chart`. Smoke list + the unit
+  test assert layers, the `signal` per row, the distro-bug case
+  (Maven+distro+OS-path -> application), and a no-rules run proving
+  openjdk -> platform via runtime_name without any JSON rule.
 - `rearch` (subscription_rearch) uses the `advisorresources` ARG table (Cost
   category recs carry `properties.extendedProperties.annualSavingsAmount` as a
   STRING - parse defensively, /12 for monthly). It is single-sub: >1 sub in

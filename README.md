@@ -65,7 +65,8 @@ The files below are the modules the launcher calls.
 | `policy_components.py` | `policy-components`: drill ONE compliance initiative (assignment) -> groups -> member policies to the individual **non-compliant components** (e.g. the failing Kubernetes namespace/kind/name), with resource-level fallback for policies that have no components; interactive selection or `--initiative/--group/--policy` flags (`--list` to discover) | Policy/PolicyInsights componentPolicyStates + policyStates, ARG |
 | `network_ip_capacity.py` | Network model, API exposure, subnet IP pressure, Azure CNI pod IP demand, subnet NSG/route/NAT metadata | Resource Graph only |
 | `tag_chargeback.py` | Required tag coverage, owner/cost-center/application gaps, tag value normalization, chargeback readiness | Resource Graph only |
-| `optimization_report.py` | Prioritized cost-optimization queue combining amortized cost, utilization, spot/RI/SP signals, stopped-billing candidates | Cost Mgmt, ARG, Monitor |
+| `optimization_report.py` | Prioritized cost-optimization queue combining amortized cost, utilization, spot/RI/SP signals, stopped-billing, **control-plane tier** and **off-hours stop** candidates | Cost Mgmt, ARG, Monitor |
+| `cost_efficiency.py` | `efficiency`: ARG-cheap config-driven cost levers beyond spot - control-plane tier (Free/Standard/Premium), ephemeral OS disk conversion, SKU generation/family modernization (incl. ARM64), autoscaler & floor (min_count) hygiene, pool fragmentation; ranked recommendations with verify-before-move caveats | Resource Graph, Retail Prices API |
 | `subscription_rearch.py` | `rearch`: ONE subscription, ALL resources (not just AKS) - orphan/idle disks, public IPs, NICs, empty load balancers, stopped-not-deallocated VMs, stale snapshots, empty App Service plans, app gateways with no backend targets, subnet-less NAT gateways, database-less SQL elastic pools, VNet-link-less private DNS zones, unassociated NSGs/route tables, empty availability sets and resource groups (orphan filters adapted from the MIT `dolevshor/azure-orphan-resources` ARG catalog), geo-redundant nonprod storage, flat-rate firewalls/gateways, premium SQL, plus Azure Advisor cost recs; findings carry actual last-month cost and an estimated monthly saving, and a companion `.md` narrative (current-state per RG + Mermaid, findings by category, target-state moves) drives a re-architecture-for-cost-savings exercise | Resource Graph, Cost Mgmt, Azure Advisor, Retail Prices API |
 | `vulnerability_report.py` | Prisma XLSX/CVE-list enrichment and base-image/application/platform classification with remediation guidance | Prisma XLSX, classification rules, NVD/CISA KEV/EPSS |
 
@@ -543,6 +544,8 @@ uv run python aks_report.py policy --all
 uv run python aks_report.py network --all
 uv run python aks_report.py tags --all --required-tags environment,owner,costcenter,application
 uv run python aks_report.py optimization --nonprod --days 14
+uv run python aks_report.py efficiency --all
+uv run python aks_report.py efficiency --nonprod --no-retail-prices
 uv run python aks_report.py container-eol
 uv run python aks_report.py container-eol --products ubuntu,golang,dotnet
 uv run python aks_report.py aks-lifecycle --releases 52
@@ -589,6 +592,19 @@ Layer definitions:
   NuGet, gem, Composer, or Cargo packages.
 - `platform`: application runtime/framework layer such as Java/OpenJDK,
   Node.js, Python, .NET, Tomcat, or Spring Boot.
+
+Classification is deterministic and precedence-ordered (first match wins):
+JSON rule → runtime/framework by package name → package type → NVD CPE part →
+OS-shaped path/PURL → unknown. A runtime delivered even as an OS package (a JRE
+installed via `apt`) is `platform`, not `base_image`. A populated OS/Distro
+column is **not** by itself treated as base-image evidence — Prisma exports
+carry it on every row, so the package type is trusted instead. Every
+`Classification` row records the deciding rule in a `signal` column
+(`json_rule`, `runtime_name`, `pkgtype_os`, `pkgtype_app`, `cpe_o`, `cpe_a`,
+`distro_path`, `app_path`, `none`) and flags `unknown`/low-confidence rows with
+`needs_review = REVIEW` so you can audit and triage the verdicts. The `Summary`
+section also includes a `BySeverity` tab — a severity × layer grid with a
+clustered bar chart — and `ByLayer` carries a findings-by-layer bar chart.
 
 Example rule:
 
@@ -1106,6 +1122,38 @@ Sheets created: `Summary`, `SavingsCandidates`,
 | `PricingModelSplit` | `cluster, subscription, environment, cluster_id, OnDemand, Spot, Reservation, Total` | `aks-dev-01, contoso-platform, dev, <clusterId>, 1014, 141, 200, formula` | Pricing model mix used to find spot or commitment opportunities. |
 | `RawMonthly` | `cluster_id, cluster, subscription, environment, Month, PricingModel, Amortized node RG cost, Cluster fee` | `<clusterId>, aks-dev-01, contoso-platform, dev, 2026-03, OnDemand, 325, 0` | Raw cost inputs for the optimization calculations. |
 
+Candidate types include `STOPPED_BILLING`, `RIGHTSIZE_OR_SCALE_DOWN`, `SPOT_REVIEW`,
+`RI_SP_COMMITMENT_REVIEW`, `COST_SPIKE`, plus the two config-driven types
+`CONTROL_PLANE_TIER` (non-prod on Standard/Premium - downgrade to Free) and
+`OFFHOURS_STOP_CANDIDATE` (non-prod, running, off-hours stop schedule). New
+flags: `--no-tier-candidates` and `--offhours-pct` (default 0.65).
+
+### Cost Efficiency Report (Beyond Spot)
+
+Command: `uv run python aks_report.py efficiency --all`
+
+An ARG-cheap companion to `optimization`: the config-driven cost levers that
+need little or no Cost Management traffic because the saving signal is a
+flattened config field (`sku_tier`, `os_disk_type`, `vm_size`, autoscaler
+profile, pool counts). Sheets: `Scorecard`, `ControlPlaneTier`,
+`EphemeralOSDisk`, `SKUModernization`, `AutoscalerHygiene`,
+`PoolFragmentation`, `Recommendations`, `NodePools`.
+
+| Sheet | Sample headers | Example row | Field meaning |
+|---|---|---|---|
+| `ControlPlaneTier` | `cluster, subscription, environment, location, sku_tier, est_monthly_tier_cost, status, est_monthly_saving, verify_before_move` | `aks-dev-02, contoso-platform, dev, eastus2, Standard, 8.76, DOWNGRADE TO FREE, 8.76, Premium/LTS may be a deliberate support choice` | Control-plane fee by `sku.tier`; non-prod paid-tier clusters are downgrade candidates. |
+| `EphemeralOSDisk` | `cluster, subscription, environment, pool, mode, vm_size, os_disk_type, os_disk_gb, nodes, est_monthly_saving, action, verify_before_move` | `aks-dev-01, contoso-platform, dev, wrk, User, Standard_D4s_v3, Managed, 128, 3, 27, CREATE NEW POOL (ephemeral) + MIGRATE, Ephemeral is immutable on an existing pool` | Pools on managed OS disks that could move to free ephemeral (cache/temp >= OS disk). |
+| `SKUModernization` | `cluster, pool, current_sku, recommended_sku, new_generation, nodes, current_od_hr, new_od_hr, est_pct_off, est_monthly_saving, verify_before_move` | `aks-dev-01, wrk, Standard_D4s_v3, Standard_D4s_v5, x64 newer-gen, 3, 0.192, 0.154, 0.21, 83, Verify regional quota, SKU availability` | Cheaper same-vCPU/mem newer-gen SKU from the Retail Prices API; ARM64 flagged separately. |
+| `AutoscalerHygiene` | `cluster, pool, mode, count, autoscaling, min_count, max_count, autoscaler_expander, finding, verify_before_move` | `aks-dev-01, sys, System, 2, no, , , priority, SYSTEM_POOL_NO_AUTOSCALE, Advisory only` | Per-pool autoscaler / floor findings (no-autoscale, min_count == count, expander). |
+| `PoolFragmentation` | `cluster, total_pools, user_pools, single_node_user_pools, distinct_user_skus, same_sku_mergeable, findings, recommendation` | `aks-prod-01, 3, 2, 0, 2, 0, OK, No fragmentation concerns.` | Consolidation opportunities (many tiny / single-node / mergeable pools). |
+| `Recommendations` | `rank, lever, cluster, subscription, environment, est_monthly_saving_usd, verify_before_move` | `1, CONTROL_PLANE_TIER, aks-dev-02, contoso-platform, dev, 8.76, Premium/LTS may be a deliberate support choice` | Ranked $-impact actions (tier + ephemeral + SKU modernization). |
+| `NodePools` | `cluster, subscription, environment, location, pool, mode, vm_size, priority, count, ...` | `aks-dev-01, contoso-platform, dev, eastus, sys, System, Standard_D4s_v3, Regular, 2` | Reference: the full pool inventory the levers were evaluated against. |
+
+Pricing proxies are named constants (`TIER_HOURLY`,
+`MANAGED_OS_DISK_USD_PER_NODE_MONTH`) and drift - verify current pricing. SKU
+modernization uses the public Retail Prices API (no auth); pass
+`--no-retail-prices` for a fully offline / ARG-only run.
+
 ### CVE / Prisma Vulnerability Report
 
 Command: `uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json`
@@ -1117,12 +1165,13 @@ Sheets created: `Summary`, `PrismaFindings`, `Classification`,
 | Sheet | Sample headers | Example row | Field meaning |
 |---|---|---|---|
 | `Summary` | `Item, Value` | `application rows, 4` | Counts for CVEs, Prisma findings, classification layers, KEV hits, and loaded JSON classification rule files. |
+| `BySeverity` | `severity, base_image, application, platform, unknown` | `Critical, 0, 1, 0, 0` | Severity × ownership-layer finding grid with a clustered bar chart; shows which layer carries the Critical/High load. |
 | `PrismaFindings` | `sheet, row, finding_id, cve, compliance, result, severity, package, package_version, package_license, fixed_version, package_type, image, registry, repository, image_tag, hostname, distro, cvss, risk_factors, cause, image_id, vulnerability_link, purl` | `Vulnerabilities, 2, PRISMA-1, CVE-2026-1234, Vulnerability, fail, High, openssl, 3.0.1, OpenSSL, 3.0.8, OS Package, registry/app:1.0, registry, app, 1.0, host01, Ubuntu, 8.1, has fix, OS package, sha256:..., https://..., pkg:deb/ubuntu/openssl` | Normalized rows parsed from the Prisma XLSX export. Header names are matched flexibly. |
-| `Classification` | `cve, package, package_type, image, layer, confidence, evidence, kev, cvss_score, cvss_severity` | `CVE-2026-1234, openssl, OS Package, registry/app:1.0, base_image, 0.85, package type/distro indicates OS package in container image, false, 8.1, HIGH` | Ownership layer and evidence for each Prisma finding or CVE row. |
+| `Classification` | `cve, package, package_type, image, layer, confidence, signal, needs_review, evidence, kev, cvss_score, cvss_severity` | `CVE-2026-1234, openssl, OS Package, registry/app:1.0, base_image, 0.90, pkgtype_os, , package type indicates an OS package in the container image, false, 8.1, HIGH` | Ownership layer for each finding plus the deciding `signal` token and a `needs_review` flag (unknown/low-confidence rows) so verdicts are auditable. |
 | `Remediation` | `cve, layer, image, package, package_version, fixed_version, severity, kev, remediation` | `CVE-2026-1234, base_image, registry/app:1.0, openssl, 3.0.1, 3.0.8, High, false, Update the Dockerfile FROM image...` | Practical fix guidance, including Prisma fixed version and KEV action when available. |
 | `ByImage` | `image, layer, findings, cves` | `registry/app:1.0, application, 3, 2` | Rollup by container image and classified layer. |
 | `ByPackage` | `package, layer, findings, cves` | `openjdk-17-jre, platform, 1, 1` | Rollup by affected package/component and classified layer. |
-| `ByLayer` | `layer, findings, cves` | `base_image, 5, 4` | Layer-level finding and distinct-CVE counts. |
+| `ByLayer` | `layer, findings, cves` | `base_image, 5, 4` | Layer-level finding and distinct-CVE counts, with a findings-by-layer bar chart. |
 | `CVEReference` | `cve, nvd_status, published, cvss_score, cvss_severity, cwe, cpe_parts, affected_products, kev, epss, description, references` | `CVE-2026-1234, Analyzed, 2026-01-15, 8.1, HIGH, CWE-78, a; o, debian:openssl, false, 0.12, summary, https://...` | Internet-enriched reference data from NVD/CISA KEV/EPSS, or sparse rows in `--offline` mode. |
 | `ClassificationRules` | `file, type, name, layer, match` | `vulnerability_classification.example.json, classification_rule, Java runtimes are platform, platform, {"package": ["openjdk"]}` | Optional local classification rules used for the run. These are not Azure Policy. |
 | `InputColumns` | `source, columns` | `prisma.xlsx, CVE ID, Severity, Package Name, Package Type, Image` | Original Prisma headers detected so you can confirm parser alignment. |

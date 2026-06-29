@@ -817,14 +817,23 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
 
 
 def fake_retail_get(url, params):
-    return {"Items": [
-        {"meterName": "D4s v3", "productName": "Virtual Machines Dsv3 Series",
-         "unitPrice": 0.192, "type": "Consumption"},
-        {"meterName": "D4s v3 Spot", "productName": "Virtual Machines Dsv3 Series",
-         "unitPrice": 0.041, "type": "Consumption"},
-        {"meterName": "D4s v3", "productName": "Virtual Machines Dsv3 Series Windows",
-         "unitPrice": 0.38, "type": "Consumption"},
-    ], "NextPageLink": None}
+    # SKU-aware so cost_efficiency SKU modernization has a cheaper v5 candidate.
+    # Returns the D4s v3 prices (incl. Spot) the spot tests rely on when the
+    # filter doesn't name a SKU we know; otherwise the named SKU's OD price.
+    flt = (params or {}).get("$filter", "") if isinstance(params, dict) else ""
+    import re as _re
+    m = _re.search(r"armSkuName eq '([^']+)'", flt or "")
+    sku = (m.group(1).lower().replace("_", "") if m else "")  # d4sv3, d4sv5...
+    prices = {
+        "standardd4sv3": [("D4s v3", "Virtual Machines Dsv3 Series", 0.192),
+                          ("D4s v3 Spot", "Virtual Machines Dsv3 Series", 0.041),
+                          ("D4s v3", "Virtual Machines Dsv3 Series Windows", 0.38)],
+        # cheaper v5 same-shape candidate so modernize_sku(D4s_v3) returns a hit
+        "standardd4sv5": [("D4s v5", "Virtual Machines Dsv5 Series", 0.154)],
+    }
+    items = [{"meterName": mn, "productName": pn, "unitPrice": up, "type": "Consumption"}
+             for mn, pn, up in prices.get(sku, prices["standardd4sv3"])]
+    return {"Items": items, "NextPageLink": None}
 
 
 class FakeSession(hc.AzureSession):
@@ -874,6 +883,7 @@ def main():
     import cluster_deepdive
     import aks_report
     import conformance
+    import cost_efficiency
     import fleet_cost
     import fleet_inventory
     import governance
@@ -896,7 +906,7 @@ def main():
     import azrep.sandbox_spot  # noqa: F401
     import azrep.sandbox_upgrade  # noqa: F401
     for mod in (architecture_design, cluster_360, cluster_deepdive, conformance,
-                fleet_cost, fleet_inventory, governance,
+                cost_efficiency, fleet_cost, fleet_inventory, governance,
                 network_ip_capacity, optimization_report, policy_report,
                 policy_components, spot_cluster_report, spot_savings,
                 subscription_rearch, tag_chargeback, utilization_idle, version_eol):
@@ -1501,6 +1511,25 @@ def main():
         ["ReadMe", "Summary", "SavingsCandidates", "ClusterCostUtilization",
          "PricingModelSplit", "RawMonthly"],
         [chk_opt])
+
+    def chk_eff(wb):
+        ws = wb["ControlPlaneTier"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        col = hdr.index("status") + 1
+        vals = {ws.cell(row=r, column=col).value for r in range(2, ws.max_row + 1)}
+        _expect("DOWNGRADE TO FREE" in vals,
+                "efficiency report should flag the non-prod Standard-tier cluster "
+                "as a downgrade candidate: %s" % vals)
+        ws2 = wb["EphemeralOSDisk"]
+        _expect(ws2.max_row >= 2,
+                "efficiency report should flag managed-disk pools on "
+                "ephemeral-capable SKUs; EphemeralOSDisk empty")
+
+    run(cost_efficiency, base + ["--all"],
+        ["ReadMe", "Scorecard", "ControlPlaneTier", "EphemeralOSDisk",
+         "SKUModernization", "AutoscalerHygiene", "PoolFragmentation",
+         "Recommendations", "NodePools"],
+        [chk_eff])
 
     prisma_path = os.path.join(tmp, "prisma.xlsx")
     vuln_wb = Workbook()

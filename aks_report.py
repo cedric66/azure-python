@@ -143,6 +143,14 @@ REPORTS = [
         "description": "Cost, utilization, spot/RI/SP and stopped-billing candidates in one workbook.",
     },
     {
+        "key": "efficiency",
+        "aliases": ("cost-efficiency", "eff"),
+        "module": "cost_efficiency",
+        "title": "Cost efficiency (beyond spot)",
+        "description": "Config-driven cost levers: control-plane tier, ephemeral OS disk, "
+                       "SKU modernization, autoscaler/floor hygiene, pool fragmentation.",
+    },
+    {
         "key": "container-eol",
         "aliases": ("image-eol", "os-eol", "runtime-eol", "eol-radar"),
         "module": "container_os_eol",
