@@ -37,11 +37,14 @@ azrep/               shared library
                      out_path(), is_prod(), cluster filter globals
   costmgmt.py        CostClient: QPU-paced Cost Management query() -> DataFrame
                      (Cost, CostUSD, Period + groupings); default_window(), dim_in(), f_and()
-  armextras.py       cluster_metrics() (Monitor platform metrics), activity_events(),
+  armextras.py       cluster_metrics() (Monitor platform metrics), activity_events()
+                     (ContainerService control-plane), vmss_churn_events() (node-RG
+                     Microsoft.Compute VMSS delete/deallocate eviction proxy),
                      aks_supported_versions(), node_image_date(), retail_vm_prices()
   excel.py           new_workbook(), add_readme(), add_table() (sections: intro/summary/
                      detail/reference; fail/warn conditional formatting; money/pct/int),
-                     add_total_row(), add_line_chart(), add_bar_chart(), save()
+                     add_scorecard() (merged-cell KPI cards w/ RAG fill, for exec
+                     one-pagers), add_total_row(), add_line_chart(), add_bar_chart(), save()
   doc_export.py      markdown -> docx/pdf (`convert` command)
   drawio.py          .drawio diagram writer (used by architecture_design)
   sandbox.py         sandbox CLI front door: load_config(path, validate=) /
@@ -85,7 +88,7 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | version | version_eol.py | ARG + aks_supported_versions per region |
 | spot | spot_cluster_report.py | Cost Mgmt + ARG + retail prices |
 | spot-design | spot_split_design.py | ARG + retail prices |
-| spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices |
+| spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices + Activity Log (node-RG eviction proxy) |
 | utilization | utilization_idle.py | ARG + Monitor (1 paced call/cluster) |
 | governance | governance.py | ARG only; CHECKS list of (id, desc, fn(c, pools)->(status, detail)) |
 | conformance | conformance.py | ARG only; rules built from a golden YAML (sandbox config schema, subset) via build_rules(); requires --golden |
@@ -162,34 +165,50 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   Environment is per cluster via `azrep.subs.resolve_env_detail` (cluster tags
   -> RG tags -> name inference using `ENV_CODE_MAP`: -d-/-s-/-r-/-p-/-u- ->
   dev/sit/dr/prod/uat), the SAME resolution every report uses; never from the
-  subscription name. The report is structured as a FinOps value story: its
-  summary tab `SpotSavingsHeadline` is a KPI scorecard (metric/value/unit/detail
-  rows) carrying hero numbers (Spot clusters in scope, Verified savers, Realized
-  spot saving, Annualized run-rate = realized * 365/trend_days, Fleet savings
-  rate = realized / OD-counterfactual, Additional projected saving from unused
-  runway), followed by a "Ranked cluster: <name> (<env>)" leaderboard block
-  with an embedded bar chart (`_leaderboard_chart` — built directly with
-  openpyxl Reference because the block sits partway down the sheet;
-  `excel.add_bar_chart` hard-codes min_row=1 and would pull in hero rows), then
-  a confidence tally ("%badge% (CODE)" rows with actual/counterfactual/saving
-  detail). Next come `SpotTimeline` (per-day Actual total / OD counterfactual /
-  Cumulative realized saving, plus a modeled-future column = future OD -
-  projected saving; two line charts), `TopSavers` (ranked standings: projected
-  monthly saving, annualized_projected_usd = projected * 365/project_days,
-  savings_rate_pct = saving / OD-counterfactual, status = `verdict_label()`
-  human badge; one bar chart) and `SavingsByEnv` (clusters rolled up to prod
-  vs non-prod tiers via `azrep.subs.is_prod()` on the resolved environment;
-  one row per environment with clusters / verified_savers / projected+annualized
-  monthly saving / savings_rate_pct / top_verdict; prod sorts before non-prod;
-  one bar chart on projected_monthly_saving_usd). `TopSavers`, `SavingsByEnv`
-  and `SavingsProjection` all add the annualized + savings_rate_pct columns;
-  savings_rate is fractional there (Excel % format) but scaled to integer pct
-  in the headline for readability. Then the original `BeforeSpot`, `AfterSpot`,
-  `SavingsProjection` and `ActualVsProjection`; current node counts are current
-  ARG facts only, while `avg_node_equiv_at_retail` is an explicitly labeled
-  cost/rate estimate. `VERDICT_LABEL` maps the raw verdict codes to human
-  badges: SAVING->"Verified saving", FLAT->"Inconclusive", COST_UP->"Needs
+  subscription name. The report is LAYERED (green `section="summary"` story tabs
+  first, then a detail/reference evidence appendix). Story tabs in order:
+  `Scorecard` (built with `excel.add_scorecard` KPI cards, NOT a table) separates
+  the hard billed fact (invoiced Spot spend, from `last_N_actual_spot_cost`) from
+  the retail-model estimate (avoided cost), plus spot coverage %, realized-vs-
+  achievable spot discount (achievable = hours-weighted `(od_hr-spot_hr)/od_hr`
+  over priced estimate rows), untapped runway, prod-on-spot risk count, and the
+  honest 3-state adoption read (Verified savers / Pricing gap / Not adopted);
+  `Recommendations` (`recommendation_rows`: one ranked row per eligible regular
+  Linux User OD pool via `_projectable_pools`, `est_monthly_saving_usd =
+  nodes*(od_hr-spot_hr)*24*30.4375`, with `cluster_risk_band` + a loud
+  `verify_before_move` caveat - it is EMPTY without retail prices, so it is NOT in
+  the smoke non-empty sheet list); `CoverageRisk` (`coverage_risk_rows`: per-
+  cluster `spot_share_compute`, spot/total nodes, pool/family/zone diversity,
+  price-cap, plus `vmss_churn_approx` and an additive `_risk_band` HIGH/MED/LOW -
+  reuses the spot-risk spirit of `spot_cluster_report.assess_clusters`);
+  `RealizedSavings` (`realized_savings_rows`: slim fact-vs-model per cluster with
+  a `verdict_label` badge). Then `SpotTimeline` (per-day Actual total / OD
+  counterfactual / Cumulative realized saving + modeled-future column; two line
+  charts), `TopSavers` (ranked standings: projected/annualized monthly saving,
+  `savings_rate_pct`, status badge; bar chart) and `SavingsByEnv` (prod vs non-
+  prod tier roll-up via `azrep.subs.is_prod()`; bar chart) also stay in summary.
+  The detail appendix is `SavingsProjection`, `BeforeSpot`, `AfterSpot`,
+  `ActualVsProjection`, `SpotSavingsSummary` (full per-cluster detail; keeps the
+  raw `verdict` + `last_N_*` columns engineers and tests rely on), `FleetDailyTrend`,
+  `SpotSavingsDaily/ByPool`; reference is `PriceReference`/`RawDailyCost`.
+  `TopSavers`/`SavingsByEnv`/`SavingsProjection` carry annualized +
+  `savings_rate_pct` (fractional, Excel % format). `VERDICT_LABEL` maps raw codes
+  to badges: SAVING->"Verified saving", FLAT->"Inconclusive", COST_UP->"Needs
   review", PRICE_MISSING->"Pricing gap", NO_SPOT_COST->"Not adopted".
+  `classify_verdict` is unchanged, but COST_UP/FLAT effectively never fire for the
+  counterfactual (saving = `hours*(od_hr-spot_hr) >= 0`), so the Scorecard presents
+  the honest 3-state read instead of the old 5-badge tally. The old
+  `SpotSavingsHeadline` table (`headline_rows`) and `_leaderboard_chart` were removed.
+- `spot-savings` eviction proxy: `CoverageRisk.vmss_churn_approx` comes from
+  `armextras.vmss_churn_events(session, sub, node_resource_group, days)` - a NEW
+  helper that reads the node RG's Activity Log for Microsoft.Compute VMSS
+  delete/deallocate ops (UNLIKE `activity_events`, which keeps only
+  Microsoft.ContainerService control-plane writes). True spot evictions are only
+  visible on-node (Scheduled Events/IMDS), unreachable at Reader scope, so this
+  proxy mixes evictions with autoscale-down - label it as such, never a clean
+  eviction count. It runs once per spot cluster (node RG) unless `--no-eviction-scan`.
+  The smoke `ACTIVITY` fixture carries one Microsoft.Compute VMSS delete event so
+  the column is exercised; `cluster_deepdive`'s `activity_events` ignores it.
 - Control-plane-only AKS upgrade = PUT the managed cluster WITHOUT
   `properties.agentPoolProfiles`; pools upgrade individually via agentPool
   `orchestratorVersion`. One minor hop at a time.

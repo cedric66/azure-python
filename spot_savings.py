@@ -3,9 +3,10 @@
 This report answers: "after a cluster added spot node pools, did it actually
 save money?" It uses subscription-scope Cost Management queries only.
 
-Tabs: ReadMe, SpotSavingsHeadline, SpotTimeline, TopSavers, SavingsProjection,
-SavingsByEnv, BeforeSpot, AfterSpot, ActualVsProjection, SpotSavingsSummary,
-FleetDailyTrend, SpotSavingsDaily, SpotSavingsByPool, PriceReference, RawDailyCost.
+Story tabs: ReadMe, Scorecard, Recommendations, CoverageRisk, RealizedSavings,
+SpotTimeline, TopSavers, SavingsByEnv. Evidence appendix: SavingsProjection,
+BeforeSpot, AfterSpot, ActualVsProjection, SpotSavingsSummary, FleetDailyTrend,
+SpotSavingsDaily, SpotSavingsByPool, PriceReference, RawDailyCost.
 
 Environments are inferred from each cluster/resource-group name: tokens like
 -d-, -s-, -r-, -p-, -u- map to dev/sit/dr/prod/uat (see ENV_CODE_MAP in azrep/subs).
@@ -25,15 +26,15 @@ import datetime as dt
 from collections import defaultdict
 
 import pandas as pd
-from openpyxl.chart import BarChart, Reference
 
 from azrep import excel
+from azrep.armextras import vmss_churn_events
 from azrep.costmgmt import CostClient, dim_in
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
 from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_scope
 from spot_cluster_report import (PM_ORDER, chunks, pool_from_resource_id,
-                                 price_reference_rows, retail_price_lookup)
+                                 price_reference_rows, retail_price_lookup, vm_family)
 
 RG_CHUNK = 30
 DAYS_PER_MONTH = 30.4375
@@ -801,8 +802,6 @@ def add_actual_projection_chart(ws, chart_data):
     return ch
 
 
-VERDICTS = ("SAVING", "FLAT", "COST_UP", "PRICE_MISSING", "NO_SPOT_COST")
-
 # Plain-English badge for FinOps / Business-Unit audiences. The raw `verdict`
 # column stays in every detail tab for engineers; these labels are for the
 # presentation tabs (headline, standings) so a non-platform reader understands
@@ -825,90 +824,6 @@ def _safe_div(num, den):
     if den in (0, None) or pd.isna(den) or float(den) == 0.0:
         return None
     return float(num) / float(den)
-
-
-def headline_rows(summary, projection, trend_days, top_n=8):
-    """KPI scorecard for a one-page presentation snapshot.
-
-    Layout (rows, read top-to-bottom):
-      1. Hero metrics: # spot clusters, verified-savers count, realized spot
-         savings (last N days), annualized run-rate, fleet savings rate %.
-      2. Per-cluster leaderboard (top_n by projected monthly saving) with a
-         human verdict badge, destined for the bar chart on the same sheet.
-      3. Verdict confidence tally (engineer-facing, kept for transparency).
-    """
-    ac = "last_%d_actual_spot_cost" % trend_days
-    cf = "last_%d_od_counterfactual" % trend_days
-    sv = "last_%d_estimated_spot_saving" % trend_days
-    share = "last_%d_spot_share" % trend_days
-    s = summary if (summary is not None and not summary.empty) else pd.DataFrame()
-    p = projection if (projection is not None and not projection.empty) else pd.DataFrame()
-
-    n_spot = int(len(s)) if not s.empty else 0
-    n_saving = int((s["verdict"] == "SAVING").sum()) if not s.empty else 0
-    realized = float(s[sv].fillna(0.0).sum()) if not s.empty else 0.0
-    counter_actual = float(s[ac].fillna(0.0).sum()) if not s.empty else 0.0
-    counter_od = float(s[cf].fillna(0.0).sum()) if not s.empty else 0.0
-    proj_monthly = float(p["projected_monthly_saving_usd"].fillna(0.0).sum()) if not p.empty else 0.0
-    # Savings rate = total spot saving / total OD counterfactual (what the same
-    # spot usage would have cost on-demand). Most-quoted FinOps "savings %".
-    savings_rate = _safe_div(realized, counter_od)
-    savings_rate = savings_rate * 100.0 if savings_rate is not None else None
-
-    out = pd.DataFrame([
-        {"metric": "Spot clusters in scope", "value": n_spot,
-         "unit": "count", "detail": "clusters with a current spot node pool"},
-        {"metric": "Verified savers", "value": n_saving,
-         "unit": "count", "detail": "clusters whose counterfactual shows a net saving"},
-        {"metric": "Realized spot saving (last %d days)" % trend_days, "value": realized,
-         "unit": "usd", "detail": "retail counterfactual: OD cost - actual spot cost summed"},
-        {"metric": "Annualized run-rate", "value": realized / int(trend_days) * (12 * DAYS_PER_MONTH) if trend_days else None,
-         "unit": "usd", "detail": "realized / trend_days * 12 * 30.4375 (steady-state projection)"},
-        {"metric": "Fleet savings rate", "value": savings_rate,
-         "unit": "pct", "detail": "realized saving / OD counterfactual; spot discount realized"},
-        {"metric": "Additional projected saving (unused runway)", "value": proj_monthly,
-         "unit": "usd_month", "detail": "monthly $ if remaining priced OD nodes also move to spot"},
-    ])
-
-    # Leaderboard, one row per cluster, by projected monthly saving desc.
-    if not p.empty:
-        lb = p.sort_values("projected_monthly_saving_usd", ascending=False,
-                           na_position="last").head(top_n).copy()
-        lb_rows = []
-        for _i, r in lb.iterrows():
-            lb_rows.append({
-                "metric": "Ranked cluster: %s (%s)" % (r.get("cluster", ""), r.get("environment", "")),
-                "value": float(r["projected_monthly_saving_usd"])
-                if pd.notna(r.get("projected_monthly_saving_usd")) else None,
-                "unit": "usd_month",
-                "detail": "%s | %s spot nodes | %s" % (
-                    verdict_label(r.get("verdict", "")),
-                    int(r.get("current_spot_nodes", 0) or 0),
-                    r.get("location", "")),
-            })
-        out = pd.concat([out, pd.DataFrame([{
-            "metric": "--- Top %d clusters by projected monthly saving ---" % top_n,
-            "value": None, "unit": "", "detail": ""}]),
-            pd.DataFrame(lb_rows)], ignore_index=True)
-
-    # Confidence tally: raw verdict counts, for methodology transparency.
-    counts = {v: int((s["verdict"] == v).sum()) if not s.empty else 0 for v in VERDICTS}
-    out = pd.concat([out, pd.DataFrame([{
-        "metric": "--- Confidence tally (raw verdicts) ---",
-        "value": None, "unit": "", "detail": ""}])], ignore_index=True)
-    for v in VERDICTS:
-        if counts[v] and not s.empty:
-            detail = "actual $%.0f  OD-counterfactual $%.0f  saving $%.0f" % (
-                float(s.loc[s["verdict"] == v, ac].fillna(0.0).sum()),
-                float(s.loc[s["verdict"] == v, cf].fillna(0.0).sum()),
-                float(s.loc[s["verdict"] == v, sv].fillna(0.0).sum()))
-        else:
-            detail = ""
-        out = pd.concat([out, pd.DataFrame([{
-            "metric": "%s (%s)" % (verdict_label(v), v),
-            "value": counts[v], "unit": "count", "detail": detail}])],
-            ignore_index=True)
-    return out
 
 
 def top_savers_rows(projection, trend_days, top_n=15):
@@ -1055,37 +970,258 @@ def timeline_rows(daily, projection, project_days):
     return pd.DataFrame(rows, columns=cols)
 
 
-def _leaderboard_chart(ws, chart_data, anchor):
-    """Bar chart of the leaderboard 'Ranked cluster' rows by monthly $.
+def _fmt_money_compact(v):
+    """$1.2M / $12.3k / $540 for big-number cards (None/NaN -> 'n/a')."""
+    if v is None or pd.isna(v):
+        return "n/a"
+    v = float(v)
+    sign, a = ("-" if v < 0 else ""), abs(v)
+    if a >= 1e6:
+        return "%s$%.1fM" % (sign, a / 1e6)
+    if a >= 1e3:
+        return "%s$%.1fk" % (sign, a / 1e3)
+    return "%s$%.0f" % (sign, a)
 
-    Built directly with openpyxl (rather than excel.add_bar_chart) because the
-    leaderboard rows sit partway down the headline sheet and add_bar_chart
-    hard-codes min_row=1, which would pull in the hero-metric rows above.
-    """
-    if chart_data is None or chart_data.empty:
-        return None
-    lb = chart_data[chart_data["metric"].astype(str).str.startswith(
-        "Ranked cluster:")]
-    if lb.empty:
-        return None
-    n = len(lb)
-    data_col = list(chart_data.columns).index("value") + 1
-    cat_col = list(chart_data.columns).index("metric") + 1
-    # +2: +1 for 1-indexing, +1 to land on first data row below the header.
-    start_row = lb.index[0] + 2
-    end_row = start_row + n - 1
-    ch = BarChart()
-    ch.type = "col"
-    ch.title = "Top clusters by projected monthly saving"
-    ch.height, ch.width = 9, 24
-    ch.y_axis.title = "USD / month"
-    data = Reference(ws, min_col=data_col, max_col=data_col,
-                     min_row=start_row - 1, max_row=end_row)
-    cats = Reference(ws, min_col=cat_col, min_row=start_row, max_row=end_row)
-    ch.add_data(data, titles_from_data=True)
-    ch.set_categories(cats)
-    ws.add_chart(ch, anchor)
-    return ch
+
+def _fmt_pct(frac):
+    """0.68 -> '68%' (None/NaN -> 'n/a')."""
+    if frac is None or pd.isna(frac):
+        return "n/a"
+    return "%.0f%%" % (float(frac) * 100.0)
+
+
+def _window_slice(daily, trend_days):
+    """Rows within the trailing trend_days of the daily frame (adds a throwaway _d)."""
+    if daily is None or daily.empty:
+        return daily
+    max_date = parse_date(daily["Date"].max())
+    start = max_date - dt.timedelta(days=trend_days - 1)
+    d = daily.copy()
+    d["_d"] = d["Date"].map(parse_date)
+    return d[d["_d"] >= start]
+
+
+SPOT_SHARE_HIGH = 0.50
+SPOT_SHARE_MED = 0.25
+
+
+def _risk_band(is_prod_env, spot_share, single_pool, single_family, price_capped,
+               no_od_fallback):
+    """Transparent additive reliability score -> HIGH/MED/LOW band + reason string.
+    Caller passes '-' band itself for clusters with no spot exposure."""
+    score, reasons = 0, []
+    if is_prod_env:
+        score += 2
+        reasons.append("prod on spot")
+    if spot_share >= SPOT_SHARE_HIGH:
+        score += 2
+        reasons.append("spot >=50% of compute")
+    elif spot_share >= SPOT_SHARE_MED:
+        score += 1
+        reasons.append("spot >=25% of compute")
+    if single_pool:
+        score += 1
+        reasons.append("single spot pool (drains together)")
+    if single_family:
+        score += 1
+        reasons.append("single VM family")
+    if price_capped:
+        score += 1
+        reasons.append("price-capped spot")
+    if no_od_fallback:
+        score += 1
+        reasons.append("no on-demand fallback")
+    band = "HIGH" if score >= 4 else "MED" if score >= 2 else "LOW"
+    return band, "; ".join(reasons)
+
+
+def coverage_risk_rows(clusters, pools, daily, churn_by_cluster, trend_days):
+    """Per-cluster spot exposure + reliability risk. Structural signals are reliable
+    (no extra calls); vmss_churn_approx is a best-effort eviction proxy (mixes real
+    evictions with autoscale-down, not separable at Reader scope). risk_band is an
+    additive, explainable score - see _risk_band."""
+    cols = ["cluster_id", "cluster", "subscription", "environment", "is_prod",
+            "spot_share_compute", "spot_nodes", "total_nodes", "spot_node_pct",
+            "spot_pools", "spot_vm_families", "spot_zones", "price_capped_spot",
+            "vmss_churn_approx", "risk_band", "risk_reasons"]
+    win = _window_slice(daily, trend_days)
+    rows = []
+    for c in clusters:
+        cid = c["id"]
+        ps = [p for p in pools if p["cluster_id"] == cid]
+        spot = [p for p in ps if str(p.get("priority", "")).lower() == "spot"]
+        od_user = [p for p in ps if str(p.get("priority", "")).lower() != "spot"
+                   and str(p.get("mode", "")).lower() == "user"
+                   and int(p.get("count") or 0) > 0]
+        spot_nodes = sum(int(p.get("count") or 0) for p in spot)
+        total_nodes = sum(int(p.get("count") or 0) for p in ps)
+        cd = win[win["cluster_id"] == cid] if win is not None and not win.empty else None
+        spot_spend = float(cd["Spot"].sum()) if cd is not None and len(cd) else 0.0
+        compute_spend = float(cd["Compute total (USD)"].sum()) if cd is not None and len(cd) else 0.0
+        spot_share = spot_spend / compute_spend if compute_spend else 0.0
+        families = {vm_family(p["vm_size"]) for p in spot if p.get("vm_size")}
+        zones = {z.strip() for p in spot for z in str(p.get("zones") or "").split(",")
+                 if z.strip()}
+        price_capped = any(p.get("spot_max_price") not in (-1, "-1", None, "") for p in spot)
+        prod = is_prod(c["environment"])
+        churn = (churn_by_cluster or {}).get(cid)
+        churn_count = churn.get("count") if isinstance(churn, dict) else None
+        if spot_nodes <= 0 and spot_spend <= 0:
+            band, reasons = "-", "no spot exposure"
+        else:
+            band, reasons = _risk_band(
+                prod, spot_share, single_pool=(len(spot) == 1),
+                single_family=(len(families) < 2), price_capped=price_capped,
+                no_od_fallback=(not od_user))
+        rows.append({
+            "cluster_id": cid, "cluster": c["cluster"],
+            "subscription": c["subscription"], "environment": c["environment"],
+            "is_prod": "yes" if prod else "no", "spot_share_compute": spot_share,
+            "spot_nodes": spot_nodes, "total_nodes": total_nodes,
+            "spot_node_pct": (spot_nodes / total_nodes) if total_nodes else 0.0,
+            "spot_pools": len(spot), "spot_vm_families": len(families),
+            "spot_zones": len(zones),
+            "price_capped_spot": "yes" if price_capped else "no",
+            "vmss_churn_approx": churn_count, "risk_band": band, "risk_reasons": reasons,
+        })
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        order = {"HIGH": 0, "MED": 1, "LOW": 2, "-": 3}
+        df["_r"] = df["risk_band"].map(order).fillna(9)
+        df = df.sort_values(["_r", "spot_share_compute"], ascending=[True, False]) \
+               .drop(columns=["_r"]).reset_index(drop=True)
+    return df
+
+
+def recommendation_rows(clusters, pools, prices, risk_by_cluster, trend_days):
+    """Ranked, actionable OD->spot moves: one row per eligible regular Linux User OD
+    pool, sized by retail saving. Reader access cannot see workload suitability
+    (replicas/PDBs/statefulness), so every row carries an explicit verify flag and
+    the cluster's reliability band - a candidate list, not an instruction to move."""
+    cols = ["rank", "cluster", "environment", "pool", "vm_size", "current_od_nodes",
+            "est_monthly_saving_usd", "est_annual_saving_usd", "cluster_risk_band",
+            "verify_before_move", "basis"]
+    rows = []
+    for c in clusters:
+        for p, od_hr, spot_hr in _projectable_pools(pools, prices, c["id"]):
+            nodes = int(p.get("count") or 0)
+            monthly = nodes * (od_hr - spot_hr) * 24.0 * DAYS_PER_MONTH
+            rows.append({
+                "cluster": c["cluster"], "environment": c["environment"],
+                "pool": p.get("pool"), "vm_size": p.get("vm_size"),
+                "current_od_nodes": nodes, "est_monthly_saving_usd": monthly,
+                "est_annual_saving_usd": monthly * 12.0,
+                "cluster_risk_band": (risk_by_cluster or {}).get(c["id"], ""),
+                "verify_before_move": "replicas / PDB / stateful?",
+                "basis": "retail OD-spot delta x current nodes (suitability NOT verified)",
+            })
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    df = pd.DataFrame(rows).sort_values(
+        "est_monthly_saving_usd", ascending=False).reset_index(drop=True)
+    df["rank"] = range(1, len(df) + 1)
+    return df.reindex(columns=cols)
+
+
+def realized_savings_rows(summary, trend_days):
+    """Slim fact-vs-model per cluster for the trust story: invoiced Spot spend is a
+    hard billed fact; the OD counterfactual and saving are retail-rate estimates."""
+    cols = ["cluster", "environment", "invoiced_spot_fact_usd",
+            "od_counterfactual_model_usd", "est_saving_model_usd",
+            "savings_rate_pct", "status", "verdict"]
+    if summary is None or summary.empty:
+        return pd.DataFrame(columns=cols)
+    ac = "last_%d_actual_spot_cost" % trend_days
+    cf = "last_%d_od_counterfactual" % trend_days
+    sv = "last_%d_estimated_spot_saving" % trend_days
+    s = summary
+    out = pd.DataFrame({
+        "cluster": s["cluster"], "environment": s["environment"],
+        "invoiced_spot_fact_usd": s[ac], "od_counterfactual_model_usd": s[cf],
+        "est_saving_model_usd": s[sv], "savings_rate_pct": _safe_div_vec(s[sv], s[cf]),
+        "status": s["verdict"].map(verdict_label).fillna(s["verdict"]),
+        "verdict": s["verdict"],
+    })
+    return out.sort_values("est_saving_model_usd", ascending=False,
+                           na_position="last").reset_index(drop=True)
+
+
+def scorecard_cards(summary, projection, daily, estimates, coverage_risk, trend_days):
+    """Exec KPI cards (list of dicts for excel.add_scorecard). Separates the hard
+    billed fact (invoiced Spot spend) from the retail-model estimate (avoided cost),
+    surfaces coverage and the achieved-vs-achievable spot-discount gap, and closes
+    with the honest 3-state adoption read (savers / pricing gap / not adopted)."""
+    s = summary if (summary is not None and not summary.empty) else pd.DataFrame()
+    p = projection if (projection is not None and not projection.empty) else pd.DataFrame()
+    cr = coverage_risk if (coverage_risk is not None and not coverage_risk.empty) else pd.DataFrame()
+    ac = "last_%d_actual_spot_cost" % trend_days
+    cf = "last_%d_od_counterfactual" % trend_days
+    sv = "last_%d_estimated_spot_saving" % trend_days
+
+    n_spot = int(len(s))
+    n_saving = int((s["verdict"] == "SAVING").sum()) if not s.empty else 0
+    n_gap = int((s["verdict"] == "PRICE_MISSING").sum()) if not s.empty else 0
+    n_not = int((s["verdict"] == "NO_SPOT_COST").sum()) if not s.empty else 0
+    invoiced = float(s[ac].fillna(0.0).sum()) if not s.empty else 0.0
+    realized = float(s[sv].fillna(0.0).sum()) if not s.empty else 0.0
+    counter_od = float(s[cf].fillna(0.0).sum()) if not s.empty else 0.0
+    proj_monthly = float(p["projected_monthly_saving_usd"].fillna(0.0).sum()) if not p.empty else 0.0
+
+    days = max(1, int(trend_days))
+    inv_mo = invoiced / days * DAYS_PER_MONTH
+    saved_mo = realized / days * DAYS_PER_MONTH
+    realized_rate = _safe_div(realized, counter_od)
+
+    achievable = None
+    if estimates is not None and not estimates.empty and "price_status" in estimates:
+        e = estimates[estimates["price_status"] == "priced"].copy()
+        if len(e):
+            od = pd.to_numeric(e["od_hr"], errors="coerce")
+            sp = pd.to_numeric(e["spot_hr"], errors="coerce")
+            hrs = pd.to_numeric(e["estimated_spot_node_hours"], errors="coerce").fillna(0.0)
+            valid = od > 0
+            if valid.any():
+                disc = ((od - sp) / od)[valid]
+                h = hrs[valid]
+                wsum = float(h.sum())
+                achievable = float((disc * h).sum() / wsum) if wsum else float(disc.mean())
+
+    win = _window_slice(daily, trend_days)
+    spot_spend = float(win["Spot"].sum()) if win is not None and not win.empty else 0.0
+    compute_spend = float(win["Compute total (USD)"].sum()) if win is not None and not win.empty else 0.0
+    coverage = spot_spend / compute_spend if compute_spend else 0.0
+
+    prod_on_spot = 0
+    if not cr.empty:
+        prod_on_spot = int(((cr["is_prod"] == "yes") & (cr["spot_nodes"] > 0)).sum())
+
+    if realized_rate is not None and achievable:
+        rate_rag = "good" if realized_rate >= 0.8 * achievable else "warn"
+    else:
+        rate_rag = "neutral"
+
+    return [
+        {"label": "Invoiced Spot spend", "value": _fmt_money_compact(inv_mo) + "/mo",
+         "caption": "actual billed (fact) - last %d-day run-rate" % days, "rag": "neutral"},
+        {"label": "Est. avoided cost", "value": _fmt_money_compact(saved_mo) + "/mo",
+         "caption": "retail counterfactual (model) - approx %s/yr" % _fmt_money_compact(saved_mo * 12),
+         "rag": "good" if saved_mo > 0 else "neutral"},
+        {"label": "Verified savers", "value": "%d / %d" % (n_saving, n_spot),
+         "caption": "clusters with a priced net saving", "rag": "good" if n_saving else "warn"},
+        {"label": "Spot coverage", "value": _fmt_pct(coverage),
+         "caption": "spot / compute spend (last %d days)" % days, "rag": "neutral"},
+        {"label": "Savings rate vs achievable",
+         "value": "%s / %s" % (_fmt_pct(realized_rate), _fmt_pct(achievable)),
+         "caption": "realized vs retail spot discount", "rag": rate_rag},
+        {"label": "Untapped saving", "value": _fmt_money_compact(proj_monthly) + "/mo",
+         "caption": "if eligible OD pools move to spot", "rag": "warn" if proj_monthly > 0 else "good"},
+        {"label": "Prod on spot", "value": str(prod_on_spot),
+         "caption": "prod clusters leaning on spot - review", "rag": "bad" if prod_on_spot else "good"},
+        {"label": "Pricing gap", "value": str(n_gap),
+         "caption": "adopted but retail price unavailable", "rag": "warn" if n_gap else "neutral"},
+        {"label": "Not adopted", "value": str(n_not),
+         "caption": "clusters with no spot spend", "rag": "neutral"},
+    ]
 
 
 def main(argv=None):
@@ -1117,6 +1253,9 @@ def main(argv=None):
     p.add_argument("--include-all-clusters", action="store_true",
                    help="DEPRECATED no-op kept for backward compatibility; the full fleet is "
                         "now kept by default. Use --only-spot-clusters for the opposite filter.")
+    p.add_argument("--no-eviction-scan", action="store_true",
+                   help="skip the per-spot-cluster node-RG Activity Log scan that feeds the "
+                        "CoverageRisk vmss_churn_approx column (eviction+autoscale proxy)")
     args = p.parse_args(argv)
 
     today = dt.date.today()
@@ -1176,7 +1315,31 @@ def main(argv=None):
     by_env = savings_by_env_rows(projection, args.spot_trend_days)
     fleet_trend = fleet_trend_rows(daily)
     by_pool = pool_savings_rows(estimates, args.spot_trend_days)
-    headline = headline_rows(summary, projection, args.spot_trend_days)
+    spot_cluster_ids_now = {p["cluster_id"] for p in pools
+                            if str(p.get("priority", "")).lower() == "spot"}
+    churn_by_cluster = {}
+    if not args.no_eviction_scan:
+        scan = [c for c in clusters if c["id"] in spot_cluster_ids_now
+                and c.get("node_resource_group")]
+        if scan:
+            log("Scanning node-RG Activity Log for VMSS churn (eviction proxy) on "
+                "%d spot cluster(s)..." % len(scan))
+        for c in scan:
+            try:  # a churn-scan hiccup must never kill the savings report
+                churn_by_cluster[c["id"]] = vmss_churn_events(
+                    session, c["subscription_id"], c["node_resource_group"],
+                    args.spot_trend_days)
+            except Exception as e:
+                log("  VMSS churn scan failed for %s: %s" % (c["cluster"], e))
+    coverage_risk = coverage_risk_rows(clusters, pools, daily, churn_by_cluster,
+                                       args.spot_trend_days)
+    risk_by_cluster = (dict(zip(coverage_risk["cluster_id"], coverage_risk["risk_band"]))
+                       if not coverage_risk.empty else {})
+    recommendations = recommendation_rows(clusters, pools, prices, risk_by_cluster,
+                                          args.spot_trend_days)
+    realized = realized_savings_rows(summary, args.spot_trend_days)
+    cards = scorecard_cards(summary, projection, daily, estimates, coverage_risk,
+                            args.spot_trend_days)
     prdf = price_reference_rows(prices) if prices else pd.DataFrame(
         columns=["region", "vm_size", "od_hr", "spot_hr", "discount %"])
 
@@ -1201,25 +1364,28 @@ def main(argv=None):
         "WHAT THIS REPORT SHOWS",
         "This workbook answers a single FinOps question for business owners: after our",
         "AKS clusters added Azure Spot VMSS node pools, how much money have we saved,",
-        "and how much more could we save? Read the tabs left to right - they tell the",
-        "story from headline number down to raw evidence.",
+        "how much more could we save, and what reliability risk are we carrying? Read the",
+        "tabs left to right - the green story tabs come first, then the evidence appendix.",
         "",
-        "  1. SpotSavingsHeadline  - the decision page. Hero metrics (realized saving,",
-        "     annualized run-rate, fleet savings rate %), a top-clusters bar chart, and",
-        "     a confidence tally. This is the one slide for execs.",
-        "  2. SpotTimeline         - the visual proof. Actual daily cost vs the on-demand",
-        "     counterfactual, plus cumulative realized savings climbing left to right.",
-        "  3. TopSavers            - the standings. One row per cluster, ranked by",
-        "     projected monthly and annualized saving, with a plain-English status.",
-        "  4. SavingsProjection   - where the remaining runway is: for each cluster, how",
-        "     many on-demand nodes could still move to spot and the modeled monthly $.",
-        "  4b. SavingsByEnv        - same data rolled up to prod vs non-prod tiers so a",
-        "     Business Unit owner can read savings by environment class.",
-        "  5. BeforeSpot/AfterSpot - actual Cost Management spend split by pool before",
-        "     and after spot adoption, for due-diligence checks.",
-        "  6. SpotSavingsSummary   - per-cluster technical detail (windows, shares).",
-        "  7. ActualVsProjection + FleetDailyTrend - chart tabs.",
-        "  8. SpotSavingsDaily/ByPool + PriceReference/RawDailyCost - appendices.",
+        "STORY (read these):",
+        "  1. Scorecard       - the one exec page: KPI cards separating the hard billed",
+        "     fact (invoiced Spot spend) from the retail-model estimate (avoided cost),",
+        "     plus coverage %, achieved-vs-achievable discount, untapped runway, prod-on-",
+        "     spot risk, and the 3-state adoption read (savers / pricing gap / not adopted).",
+        "  2. Recommendations - ranked OD->spot moves sized by retail saving. CANDIDATES",
+        "     ONLY: Reader access cannot see replicas/PDBs/statefulness, so every row says",
+        "     verify_before_move and carries the cluster reliability band - never move a",
+        "     pool on this list without checking the workload first.",
+        "  3. CoverageRisk    - per-cluster spot exposure + reliability band. Structural",
+        "     signals are exact; vmss_churn_approx is a best-effort eviction proxy (it",
+        "     mixes real evictions with autoscale-down - not separable at Reader scope).",
+        "  4. RealizedSavings - per-cluster fact-vs-model: invoiced Spot $ (billed fact)",
+        "     beside the OD counterfactual and saving (retail estimates), with a badge.",
+        "",
+        "EVIDENCE (appendix): SpotTimeline (actual vs counterfactual + cumulative saving),",
+        "TopSavers / SavingsByEnv standings, SavingsProjection runway, BeforeSpot/AfterSpot",
+        "due-diligence, SpotSavingsSummary technical detail, FleetDailyTrend, the daily/by-",
+        "pool tables, and PriceReference/RawDailyCost.",
         "",
         "HOW WE COUNT SAVINGS (so the number is defensible)",
         "We do NOT compare whole-cluster cost before vs after - that moves when",
@@ -1229,8 +1395,9 @@ def main(argv=None):
         "the public Azure Spot retail rate, then re-price those same hours at the public",
         "On-Demand rate. The difference is the saving attributable purely to spot. This is",
         "the industry-standard 'avoided cost' method and it isolates the spot decision.",
-        "Status badges: Verified saving / Inconclusive / Needs review / Pricing gap /",
-        "Not adopted.",
+        "Invoiced Spot spend is a hard billed fact; the counterfactual and saving are",
+        "retail-rate estimates. Status badges: Verified saving / Inconclusive / Needs",
+        "review / Pricing gap / Not adopted.",
         "",
         "CONFIDENCE NOTES",
         "- First spot adoption is the first day Cost Management reports Spot spend",
@@ -1241,15 +1408,33 @@ def main(argv=None):
         "  annotation where retail rates are available.",
         "- Whole-cluster before/after totals appear in SavingsProjection as context only",
         "  (labelled workload-confounded); they are NOT the spot-savings verdict.",
+        "- CoverageRisk vmss_churn_approx counts node-RG VMSS delete/deallocate events from",
+        "  the Activity Log over the trend window - a best-effort eviction proxy that also",
+        "  includes autoscale-down; pass --no-eviction-scan to disable it.",
         "- Recent Cost Management data can lag, so the newest --trim-days are excluded",
         "  by default. Currency: USD for actual CostUSD; retail rates use --currency.",
     ])
-    ws_head = excel.add_table(wb, "SpotSavingsHeadline", headline, section="summary",
-                              money_cols=(),
-                              pct_cols=(),
-                              int_cols=(),
-                              max_width=95)
-    _leaderboard_chart(ws_head, headline, "F%d" % (len(headline) + 4))
+    excel.add_scorecard(wb, "Scorecard", cards, section="summary",
+                        title="Spot savings at a glance (fact vs model)")
+    excel.add_table(wb, "Recommendations", recommendations, section="summary",
+                    money_cols=("est_monthly_saving_usd", "est_annual_saving_usd"),
+                    int_cols=("rank", "current_od_nodes"),
+                    fail_cols=("cluster_risk_band",), fail_values=("HIGH",),
+                    warn_values=("MED",), max_width=70)
+    excel.add_table(wb, "CoverageRisk",
+                    coverage_risk.drop(columns=["cluster_id"], errors="ignore"),
+                    section="summary",
+                    pct_cols=("spot_share_compute", "spot_node_pct"),
+                    int_cols=("spot_nodes", "total_nodes", "spot_pools",
+                              "spot_vm_families", "spot_zones", "vmss_churn_approx"),
+                    fail_cols=("risk_band",), fail_values=("HIGH",), warn_values=("MED",),
+                    max_width=70)
+    excel.add_table(wb, "RealizedSavings", realized, section="summary",
+                    money_cols=("invoiced_spot_fact_usd", "od_counterfactual_model_usd",
+                                "est_saving_model_usd"),
+                    pct_cols=("savings_rate_pct",),
+                    fail_cols=("verdict",), fail_values=("COST_UP", "PRICE_MISSING"),
+                    warn_values=("FLAT", "NO_SPOT_COST"), max_width=90)
     ws_timeline = excel.add_table(wb, "SpotTimeline", timeline, section="summary",
                                   money_cols=("Actual total USD", "OD counterfactual USD",
                                               "Cumulative realized saving USD",
@@ -1281,13 +1466,13 @@ def main(argv=None):
                             "I%d" % (len(top_savers) + 4), y_title="USD / month")
     period_money = ("actual_vmss_cost_usd", "cluster_fee_usd", "end_to_end_cost_usd")
     period_ints = ("days_used", "current_nodes_now")
-    excel.add_table(wb, "BeforeSpot", before_spot, section="summary",
+    excel.add_table(wb, "BeforeSpot", before_spot, section="detail",
                     money_cols=period_money, int_cols=period_ints,
                     formats={"avg_node_equiv_at_retail": "0.0"}, max_width=90)
-    excel.add_table(wb, "AfterSpot", after_spot, section="summary",
+    excel.add_table(wb, "AfterSpot", after_spot, section="detail",
                     money_cols=period_money, int_cols=period_ints,
                     formats={"avg_node_equiv_at_retail": "0.0"}, max_width=90)
-    excel.add_table(wb, "SavingsProjection", projection, section="summary",
+    excel.add_table(wb, "SavingsProjection", projection, section="detail",
                     money_cols=("before_end_to_end_cost_usd", "after_end_to_end_cost_usd",
                                 "actual_total_saving_vs_before_rate_usd",
                                 "actual_spot_cost_usd", "od_counterfactual_usd",
@@ -1321,13 +1506,13 @@ def main(argv=None):
             ws_env, "Projected monthly saving by environment",
             len(by_env) + 1, env_monthly_col,
             "I%d" % (len(by_env) + 4), y_title="USD / month")
-    ws_chart = excel.add_table(wb, "ActualVsProjection", chart_data, section="summary",
+    ws_chart = excel.add_table(wb, "ActualVsProjection", chart_data, section="detail",
                                money_cols=("Actual total USD",
                                            "OD counterfactual total USD",
                                            "Modeled future total USD"))
     add_actual_projection_chart(ws_chart, chart_data)
     summary_display = summary.drop(columns=["cluster_id"], errors="ignore")
-    excel.add_table(wb, "SpotSavingsSummary", summary_display, section="summary",
+    excel.add_table(wb, "SpotSavingsSummary", summary_display, section="detail",
                     money_cols=("pre_spot_avg_daily_total", "post_first_avg_daily_total",
                                 "last_%d_avg_daily_total" % args.spot_trend_days,
                                 "total_delta_vs_pre_per_day", "projected_monthly_total_delta",
@@ -1348,7 +1533,7 @@ def main(argv=None):
     fleet_disp = fleet_trend.rename(columns={
         "Cluster fee": "cluster_fee_usd", "Compute total (USD)": "compute_total_usd",
         "Total (USD)": "total_usd", "Spot %": "spot_share"})
-    ws_trend = excel.add_table(wb, "FleetDailyTrend", fleet_disp, section="summary",
+    ws_trend = excel.add_table(wb, "FleetDailyTrend", fleet_disp, section="detail",
                                money_cols=tuple(PM_ORDER + ["cluster_fee_usd",
                                                             "compute_total_usd",
                                                             "total_usd",

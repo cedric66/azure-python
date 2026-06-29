@@ -85,6 +85,51 @@ def activity_events(session, subscription_id, resource_group, days=90):
     return out
 
 
+def vmss_churn_events(session, subscription_id, node_resource_group, days=30):
+    """Best-effort spot-eviction proxy from the AKS node resource group's Activity Log.
+
+    True spot evictions are only cleanly visible on-node (Scheduled Events / IMDS),
+    which subscription-Reader access cannot reach. What IS visible here is VMSS
+    instance delete/deallocate churn in the node RG (MC_*), which mixes real
+    evictions with normal autoscale-down - so counts are approximate and must be
+    labelled as eviction+autoscale, never as a clean eviction count. Note this is
+    deliberately scoped to Microsoft.Compute ops, unlike activity_events() which
+    keeps only Microsoft.ContainerService control-plane writes.
+
+    Returns {"count": int, "last_event_ts": str|None, "rows": [...]}."""
+    start = (dt.datetime.now(dt.timezone.utc)
+             - dt.timedelta(days=min(days, 89))).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = ("/subscriptions/%s/providers/Microsoft.Insights/eventtypes/management/values"
+           % subscription_id)
+    rows = session.get_paged(url, params={
+        "api-version": ACTIVITY_API,
+        "$filter": "eventTimestamp ge '%s' and resourceGroupName eq '%s'" % (
+            start, node_resource_group),
+        "$select": "eventTimestamp,operationName,status,resourceId",
+    })
+    out = []
+    for e in rows:
+        op = ((e.get("operationName") or {}).get("value") or "")
+        opu = op.upper()
+        if "MICROSOFT.COMPUTE/VIRTUALMACHINESCALESETS" not in opu:
+            continue
+        if not any(x in opu for x in ("/DELETE", "/DEALLOCATE")):
+            continue
+        status = (e.get("status") or {}).get("value") or ""
+        if status not in ("Succeeded", "Accepted", "Started", "Failed"):
+            continue
+        out.append({
+            "timestamp": e.get("eventTimestamp"),
+            "operation": op,
+            "status": status,
+            "resource": (e.get("resourceId") or "").split("/")[-1],
+        })
+    out.sort(key=lambda r: r["timestamp"] or "", reverse=True)
+    return {"count": len(out),
+            "last_event_ts": out[0]["timestamp"] if out else None,
+            "rows": out}
+
+
 def aks_supported_versions(session, subscription_id, location):
     """Supported Kubernetes versions for a region: {minor: {patches, support_plans,
     is_preview, is_default}}."""

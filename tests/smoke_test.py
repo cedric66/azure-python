@@ -736,6 +736,14 @@ ACTIVITY = {"value": [
     {"eventTimestamp": "2026-04-02T09:00:00Z",
      "operationName": {"value": "Microsoft.ContainerService/managedClusters/write"},
      "caller": "deploy-sp", "status": {"value": "Succeeded"}, "resourceId": CL1},
+    # VMSS instance delete in the node RG: spot_savings.vmss_churn_events keeps this
+    # (eviction proxy); cluster_deepdive.activity_events drops it (Compute, not
+    # ContainerService), so deepdive results are unaffected.
+    {"eventTimestamp": "2026-06-10T03:00:00Z",
+     "operationName": {"value": "Microsoft.Compute/virtualMachineScaleSets/delete"},
+     "caller": "", "status": {"value": "Succeeded"},
+     "resourceId": "/subscriptions/s/resourceGroups/MC_rg-apps-dev_aks-dev-01_eastus"
+                   "/providers/Microsoft.Compute/virtualMachineScaleSets/aks-spt-11111111-vmss"},
 ]}
 
 
@@ -1048,9 +1056,9 @@ def main():
                     for r in range(2, ws.max_row + 1)}
         _expect("PRICE_MISSING" in verdicts or "NO_SPOT_COST" in verdicts,
                 "smoke fixture should expose explicit spot-savings verdicts: %s" % verdicts)
-        for sheet in ("SpotSavingsHeadline", "SpotTimeline", "TopSavers",
-                      "BeforeSpot", "AfterSpot", "SavingsProjection",
-                      "ActualVsProjection"):
+        for sheet in ("Scorecard", "Recommendations", "CoverageRisk",
+                      "RealizedSavings", "SpotTimeline", "TopSavers", "BeforeSpot",
+                      "AfterSpot", "SavingsProjection", "ActualVsProjection"):
             _expect(sheet in wb.sheetnames, "spot savings workbook missing %s" % sheet)
         ws_proj = wb["SavingsProjection"]
         headers = [ws_proj.cell(row=1, column=j).value for j in range(1, ws_proj.max_column + 1)]
@@ -1071,20 +1079,38 @@ def main():
                     "annualized_projected_usd", "savings_rate_pct", "status"):
             _expect(col in top_headers, "TopSavers missing %s" % col)
         _expect(len(ws_top._charts) >= 1, "TopSavers should include a bar chart")
-        # Headline is now a KPI scorecard with metric/value/unit/detail columns.
-        head = wb["SpotSavingsHeadline"]
-        head_headers = [head.cell(row=1, column=j).value
-                        for j in range(1, head.max_column + 1)]
-        for col in ("metric", "value", "unit", "detail"):
-            _expect(col in head_headers,
-                    "SpotSavingsHeadline scorecard missing %s" % col)
-        head_metrics = [head.cell(row=r, column=1).value for r in range(2, head.max_row + 1)]
-        _expect(any(str(m).startswith("Realized spot saving") for m in head_metrics),
-                "headline should surface a realized-savings hero metric: %s" % head_metrics)
-        _expect(any(str(m).startswith("Annualized run-rate") for m in head_metrics),
-                "headline should surface an annualized run-rate: %s" % head_metrics)
-        _expect(any(str(m).startswith("Fleet savings rate") for m in head_metrics),
-                "headline should surface a fleet savings rate %%: %s" % head_metrics)
+        # Scorecard is a KPI card sheet (merged cells) - scan all cells for the
+        # hero card labels rather than expecting a metric/value/unit/detail table.
+        card = wb["Scorecard"]
+        card_text = {str(card.cell(row=r, column=c).value)
+                     for r in range(1, card.max_row + 1)
+                     for c in range(1, card.max_column + 1)}
+        for label in ("Invoiced Spot spend", "Est. avoided cost", "Spot coverage",
+                      "Verified savers", "Prod on spot"):
+            _expect(label in card_text, "Scorecard missing hero card %r" % label)
+        # Recommendations: ranked OD->spot candidates with the suitability caveat.
+        rec_headers = [wb["Recommendations"].cell(row=1, column=j).value
+                       for j in range(1, wb["Recommendations"].max_column + 1)]
+        for col in ("rank", "est_monthly_saving_usd", "cluster_risk_band",
+                    "verify_before_move"):
+            _expect(col in rec_headers, "Recommendations missing %s" % col)
+        # CoverageRisk: structural exposure + the eviction-proxy churn column, which
+        # the fixture's Microsoft.Compute VMSS delete event must populate.
+        cov = wb["CoverageRisk"]
+        cov_headers = [cov.cell(row=1, column=j).value
+                       for j in range(1, cov.max_column + 1)]
+        for col in ("risk_band", "spot_share_compute", "vmss_churn_approx"):
+            _expect(col in cov_headers, "CoverageRisk missing %s" % col)
+        churn_col = cov_headers.index("vmss_churn_approx") + 1
+        churn_vals = [cov.cell(row=r, column=churn_col).value
+                      for r in range(2, cov.max_row + 1)]
+        _expect(any((v or 0) >= 1 for v in churn_vals),
+                "eviction-proxy scan should record VMSS churn from the fixture: %s" % churn_vals)
+        # RealizedSavings: hard fact (invoiced spot) beside the model counterfactual.
+        rz_headers = [wb["RealizedSavings"].cell(row=1, column=j).value
+                      for j in range(1, wb["RealizedSavings"].max_column + 1)]
+        for col in ("invoiced_spot_fact_usd", "od_counterfactual_model_usd", "status"):
+            _expect(col in rz_headers, "RealizedSavings missing %s" % col)
         # SavingsByEnv rolls clusters up to prod vs non-prod tiers.
         _expect("SavingsByEnv" in wb.sheetnames,
                 "spot savings workbook should include the SavingsByEnv tier roll-up")
@@ -1109,17 +1135,17 @@ def main():
                 "default spot-savings should keep the full fleet in scope: %s" % kept)
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
-         "SavingsProjection", "SavingsByEnv", "BeforeSpot", "AfterSpot",
-         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
+        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings",
+         "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
+         "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily", "SpotSavingsByPool", "RawDailyCost"],
         [chk_spot_savings, chk_full_fleet])
 
     run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
                                                "--trim-days", "0"],
-        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
-         "SavingsProjection", "SavingsByEnv", "BeforeSpot", "AfterSpot",
-         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
+        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings",
+         "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
+         "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily"],
         [chk_spot_savings, chk_full_fleet])
 
@@ -1137,9 +1163,9 @@ def main():
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0",
                               "--only-spot-clusters"],
-        ["ReadMe", "SpotSavingsHeadline", "SpotTimeline", "TopSavers",
-         "SavingsProjection", "SavingsByEnv", "BeforeSpot", "AfterSpot",
-         "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
+        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings",
+         "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
+         "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily"],
         [chk_only_spot])
 

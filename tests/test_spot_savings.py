@@ -220,11 +220,78 @@ def test_no_spot_cost():
            "clusters with no spot cost should be explicit")
 
 
+def test_coverage_risk_recommendations_and_realized():
+    daily = daily_rows("2026-05-01", 60, 30)
+    estimates = estimate_rows("2026-05-01", 60, 30)
+    _annotated, summary = spot_savings.annotate_daily_and_summary(
+        daily, estimates, [CLUSTER], FULL_POOLS, trend_days=30, baseline_days=30)
+
+    churn = {CLUSTER["id"]: {"count": 3, "last_event_ts": "2026-06-10T03:00:00Z",
+                             "rows": []}}
+    cov = spot_savings.coverage_risk_rows([CLUSTER], FULL_POOLS, daily, churn, 30)
+    crow = cov.iloc[0]
+    expect(crow["spot_nodes"] == 2 and crow["total_nodes"] == 6,
+           "coverage risk should count spot vs total nodes: %s" % crow.to_dict())
+    expect(crow["vmss_churn_approx"] == 3,
+           "coverage risk should carry the eviction-proxy churn count")
+    expect(crow["risk_band"] in ("LOW", "MED", "HIGH"),
+           "a cluster with spot exposure should get a risk band: %s" % crow["risk_band"])
+
+    risk_by = dict(zip(cov["cluster_id"], cov["risk_band"]))
+    rec = spot_savings.recommendation_rows([CLUSTER], FULL_POOLS, PRICES, risk_by, 30)
+    expect(not rec.empty, "should recommend moving the regular user OD pool to spot")
+    top = rec.iloc[0]
+    expect(top["rank"] == 1 and top["current_od_nodes"] == 4,
+           "top recommendation should size the 4-node OD pool: %s" % top.to_dict())
+    want = 4 * (0.40 - 0.10) * 24 * spot_savings.DAYS_PER_MONTH
+    expect(abs(float(top["est_monthly_saving_usd"]) - want) < 1e-6,
+           "monthly saving math should be nodes*(od-spot)*24*30.4375: %s" %
+           top["est_monthly_saving_usd"])
+    expect(str(top["verify_before_move"]).strip() != "",
+           "every recommendation must carry the workload-suitability caveat")
+
+    realized = spot_savings.realized_savings_rows(summary, 30)
+    rrow = realized.iloc[0]
+    expect(rrow["invoiced_spot_fact_usd"] == summary.iloc[0]["last_30_actual_spot_cost"],
+           "realized savings fact column should equal invoiced (billed) spot cost")
+    expect(rrow["status"] == "Verified saving",
+           "a priced net saving should map to the Verified saving badge: %s" % rrow["status"])
+
+
+def test_vmss_churn_events_keeps_compute_drops_containerservice():
+    events = [
+        {"eventTimestamp": "2026-06-10T03:00:00Z",
+         "operationName": {"value": "Microsoft.Compute/virtualMachineScaleSets/delete"},
+         "status": {"value": "Succeeded"},
+         "resourceId": "/subscriptions/s/resourceGroups/MC_x/providers/"
+                       "Microsoft.Compute/virtualMachineScaleSets/aks-spt-1-vmss"},
+        {"eventTimestamp": "2026-06-09T03:00:00Z",
+         "operationName": {"value": "Microsoft.Compute/virtualMachineScaleSets/write"},
+         "status": {"value": "Succeeded"}, "resourceId": "x"},
+        {"eventTimestamp": "2026-06-08T03:00:00Z",
+         "operationName": {"value": "Microsoft.ContainerService/managedClusters/write"},
+         "status": {"value": "Succeeded"}, "resourceId": "y"},
+    ]
+
+    class FakeSession:
+        def get_paged(self, url, params=None):
+            return events
+
+    from azrep import armextras
+    out = armextras.vmss_churn_events(FakeSession(), "sub", "MC_x", days=30)
+    expect(out["count"] == 1,
+           "only VMSS delete/deallocate count as churn (write/ContainerService dropped): %s" % out)
+    expect(out["last_event_ts"] == "2026-06-10T03:00:00Z",
+           "last_event_ts should be the most recent kept event")
+
+
 def main():
     test_counterfactual_saving_even_when_total_grows()
     test_before_after_projection_tables_and_chart()
     test_price_missing_does_not_claim_savings()
     test_no_spot_cost()
+    test_coverage_risk_recommendations_and_realized()
+    test_vmss_churn_events_keeps_compute_drops_containerservice()
     print("\nALL SPOT-SAVINGS TESTS PASSED")
 
 
