@@ -193,6 +193,26 @@ def add_bar_chart(ws, title, nrows, data_col, anchor, y_title="USD", cat_col=1):
     return ch
 
 
+def add_grouped_bar_chart(ws, title, nrows, first_data_col, last_data_col, anchor,
+                          y_title="USD", cat_col=1):
+    """Clustered (side-by-side) column chart over a contiguous range of data
+    columns - one series per column, grouped per category. Mirrors
+    add_line_chart's data-range signature; use for before/after comparisons."""
+    ch = BarChart()
+    ch.type = "col"
+    ch.grouping = "clustered"
+    ch.title = title
+    ch.height, ch.width = 9, 24
+    ch.y_axis.title = y_title
+    data = Reference(ws, min_col=first_data_col, max_col=last_data_col,
+                     min_row=1, max_row=nrows)
+    cats = Reference(ws, min_col=cat_col, min_row=2, max_row=nrows)
+    ch.add_data(data, titles_from_data=True)
+    ch.set_categories(cats)
+    ws.add_chart(ch, anchor)
+    return ch
+
+
 SCORECARD_FILL = {"good": "C6EFCE", "warn": "FFEB9C", "bad": "FFC7CE",
                   "neutral": "DDEBF7"}
 

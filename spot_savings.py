@@ -73,12 +73,14 @@ def analysis_window(today, trend_days, baseline_days, trim_days, lookback_days):
 def attach_resource_rows(frames, rg_map):
     cols = ["cluster_id", "cluster", "subscription", "environment", "location",
             "ResourceGroupName", "ResourceId", "PricingModel", "Period", "Date",
-            "Cost", "CostUSD", "Currency"]
+            "Cost", "CostUSD", "Currency", "UsageQuantity"]
     if not frames:
         return pd.DataFrame(columns=cols)
     df = pd.concat(frames, ignore_index=True)
     if df.empty:
         return pd.DataFrame(columns=cols)
+    if "UsageQuantity" not in df.columns:
+        df["UsageQuantity"] = 0.0
     key = list(zip(df["subscription_id"], df["ResourceGroupName"].str.lower()))
     df["cluster_id"] = [rg_map.get(k, {}).get("id", "") for k in key]
     df["cluster"] = [rg_map.get(k, {}).get("cluster", "(unmatched)") for k in key]
@@ -128,7 +130,8 @@ def collect_daily_cost(session, clusters, d_from, d_to):
         for ch in chunks(rgs, RG_CHUNK):
             df = cost.query(scope, "AmortizedCost", "Daily",
                             ("ResourceGroupName", "ResourceId", "PricingModel"),
-                            dim_in("ResourceGroupName", ch), d_from, d_to)
+                            dim_in("ResourceGroupName", ch), d_from, d_to,
+                            with_quantity=True)
             if not df.empty:
                 df["subscription_id"] = sid
                 res_rows.append(df)
@@ -174,54 +177,134 @@ def build_daily_breakdown(res, fees, clusters, d_from, d_to):
     return pd.DataFrame(rows)
 
 
-def build_spot_estimates(res, pools, prices):
+NONSPOT_PRICING = ("ondemand", "reservation", "savingsplan")
+
+
+def first_spot_dates(daily, spot_threshold=SPOT_THRESHOLD_USD):
+    """Map cluster_id -> first date with Spot compute spend above the threshold (or
+    None). Each cluster's own pre-spot baseline window is derived from this, so the
+    'before it ran spot' comparison varies cluster to cluster."""
+    out = {}
+    if daily is None or daily.empty or "Spot" not in daily.columns:
+        return out
+    for cid, df in daily.groupby("cluster_id", dropna=False):
+        sd = df.loc[df["Spot"] > spot_threshold, "Date"]
+        out[cid] = parse_date(sd.min()) if not sd.empty else None
+    return out
+
+
+def _effective_rate_table(rows):
+    """Actual effective $/node-hour from amortized billing: returns
+    {cid: {"by_size": {vm_size: hr}, "blend": hr}} as sum(CostUSD)/sum(UsageQuantity).
+    `rows` must be non-spot lines with a positive billed UsageQuantity."""
+    out = {}
+    if rows is None or rows.empty:
+        return out
+    by_size = defaultdict(dict)
+    g = rows.groupby(["cluster_id", "vm_size"], dropna=False)[["CostUSD", "UsageQuantity"]].sum()
+    for (cid, size), r in g.iterrows():
+        if size and float(r["UsageQuantity"]) > 0:
+            by_size[cid][size] = float(r["CostUSD"]) / float(r["UsageQuantity"])
+    gb = rows.groupby("cluster_id", dropna=False)[["CostUSD", "UsageQuantity"]].sum()
+    for cid, r in gb.iterrows():
+        h = float(r["UsageQuantity"])
+        out[cid] = {"by_size": dict(by_size.get(cid, {})),
+                    "blend": float(r["CostUSD"]) / h if h > 0 else None}
+    return out
+
+
+def _pick_od_hr(cid, vm_size, location, baseline_tbl, concurrent_tbl, prices):
+    """Choose the On-Demand/RI comparison rate for a cluster's spot node-hours,
+    preferring the cluster's own pre-spot actual rate, then the actual rate of the
+    OD/RI pool it still runs (concurrent), then public retail list price.
+    Returns (od_hr, source); (None, 'price_missing') when nothing is derivable."""
+    for tbl, src in ((baseline_tbl, "pre_spot_history"),
+                     (concurrent_tbl, "concurrent_od_pool")):
+        t = tbl.get(cid) or {}
+        if vm_size and t.get("by_size", {}).get(vm_size):
+            return t["by_size"][vm_size], src
+        if t.get("blend"):
+            return t["blend"], src + "_blend"
+    pr = prices.get((location, vm_size)) if prices else None
+    if pr and pr.get("od_hr"):
+        return float(pr["od_hr"]), "retail_fallback"
+    return None, "price_missing"
+
+
+def build_spot_estimates_actual(res, pools, prices, first_spot, baseline_days,
+                                trend_days, max_date, spot_threshold=SPOT_THRESHOLD_USD):
+    """Spot savings priced from ACTUAL amortized billing, not list price.
+
+    For every dollar of actual Spot VMSS spend we read the billed node-hours
+    (Cost Management UsageQuantity) and re-price those same hours at the cluster's
+    own actual On-Demand/RI effective rate. The rate comes - per VM size where the
+    data exists - from the cluster's pre-spot history (the window before its first
+    Spot day), falling back to the rate of the OD/RI pool it still runs in the
+    trend window, then to public retail. od_hr_source records which was used, so a
+    reviewer can see whether a row is real-history, concurrent or list-price based.
+    Amortized cost already spreads RI/Savings-Plan, so these rates carry those
+    discounts. Per-(cluster, pool, day) rows consumed by annotate_daily_and_summary."""
     cols = ["cluster_id", "cluster", "subscription", "environment", "location", "Date",
             "pool", "vm_size", "ResourceId", "spot_hr", "od_hr", "actual_spot_cost",
             "estimated_spot_node_hours", "od_counterfactual", "estimated_spot_saving",
-            "price_status"]
-    if res.empty:
+            "price_status", "od_hr_source"]
+    if res is None or res.empty:
         return pd.DataFrame(columns=cols)
     cfg = {(p["cluster_id"], p["pool"]): p for p in pools}
-    rows = []
     r = res.copy()
     r["pool"] = r["ResourceId"].map(pool_from_resource_id)
-    spot = r[(r["PricingModel"].astype(str).str.lower() == "spot")
-             & (r["pool"] != "")
-             & (r["CostUSD"].astype(float) > 0.0)]
+    r = r[r["pool"] != ""].copy()
+    if r.empty:
+        return pd.DataFrame(columns=cols)
+    r["CostUSD"] = pd.to_numeric(r["CostUSD"], errors="coerce").fillna(0.0)
+    r["UsageQuantity"] = pd.to_numeric(r.get("UsageQuantity"), errors="coerce").fillna(0.0)
+    r["vm_size"] = [cfg.get((cid, pool), {}).get("vm_size", "")
+                    for cid, pool in zip(r["cluster_id"], r["pool"])]
+    r["_date"] = r["Date"].map(parse_date)
+    r["_pm"] = r["PricingModel"].astype(str).str.lower()
+
+    nonspot = r[r["_pm"].isin(NONSPOT_PRICING) & (r["UsageQuantity"] > 0)]
+    bl_frames = []
+    for cid, grp in nonspot.groupby("cluster_id", dropna=False):
+        fs = first_spot.get(cid)
+        if not fs:
+            continue
+        m = (grp["_date"] < fs) & (grp["_date"] >= fs - dt.timedelta(days=baseline_days))
+        if m.any():
+            bl_frames.append(grp[m])
+    baseline_tbl = _effective_rate_table(
+        pd.concat(bl_frames, ignore_index=True) if bl_frames else None)
+    trend_start = max_date - dt.timedelta(days=trend_days - 1)
+    concurrent_tbl = _effective_rate_table(nonspot[nonspot["_date"] >= trend_start])
+
+    spot = r[(r["_pm"] == "spot") & (r["CostUSD"] > 0.0)]
     grouped = spot.groupby(["cluster_id", "cluster", "subscription", "environment",
                             "location", "Date", "pool", "ResourceId"], dropna=False)
+    rows = []
     for keys, grp in grouped:
-        p = cfg.get((keys[0], keys[6]), {})
-        size = p.get("vm_size", "")
-        pr = prices.get((keys[4], size)) if prices else None
-        spot_hr = (pr or {}).get("spot_hr")
-        od_hr = (pr or {}).get("od_hr")
+        cid, loc, pool = keys[0], keys[4], keys[6]
+        size = cfg.get((cid, pool), {}).get("vm_size", "")
         actual = float(grp["CostUSD"].sum())
-        if spot_hr and od_hr and spot_hr > 0:
-            hours = actual / float(spot_hr)
+        hours = float(grp["UsageQuantity"].sum())
+        od_hr, source = _pick_od_hr(cid, size, loc, baseline_tbl, concurrent_tbl, prices)
+        pr = prices.get((loc, size)) if prices else None
+        if hours <= 0 and pr and pr.get("spot_hr"):   # billing returned no node-hours
+            hours = actual / float(pr["spot_hr"])
+        if od_hr and hours > 0:
             od_cost = hours * float(od_hr)
             saving = od_cost - actual
             status = "priced"
         else:
-            hours, od_cost, saving = None, None, None
-            status = "price_missing"
+            od_cost, saving, status, source = None, None, "price_missing", "price_missing"
         rows.append({
-            "cluster_id": keys[0],
-            "cluster": keys[1],
-            "subscription": keys[2],
-            "environment": keys[3],
-            "location": keys[4],
-            "Date": keys[5],
-            "pool": keys[6],
-            "vm_size": size,
-            "ResourceId": keys[7],
-            "spot_hr": spot_hr,
-            "od_hr": od_hr,
+            "cluster_id": cid, "cluster": keys[1], "subscription": keys[2],
+            "environment": keys[3], "location": loc, "Date": keys[5], "pool": pool,
+            "vm_size": size, "ResourceId": keys[7],
+            "spot_hr": actual / hours if hours > 0 else None, "od_hr": od_hr,
             "actual_spot_cost": actual,
-            "estimated_spot_node_hours": hours,
-            "od_counterfactual": od_cost,
-            "estimated_spot_saving": saving,
-            "price_status": status,
+            "estimated_spot_node_hours": hours if hours > 0 else None,
+            "od_counterfactual": od_cost, "estimated_spot_saving": saving,
+            "price_status": status, "od_hr_source": source,
         })
     return pd.DataFrame(rows, columns=cols)
 
@@ -267,6 +350,17 @@ def annotate_daily_and_summary(daily, estimates, clusters, pools, trend_days=30,
     summaries, annotated = [], []
     max_date = parse_date(daily["Date"].max())
     trend_start = max_date - dt.timedelta(days=trend_days - 1)
+
+    # Per-cluster dominant rate basis (which OD/RI rate priced the headline saving),
+    # weighted by counterfactual magnitude over the trend-window priced spot rows.
+    basis_by_cluster = {}
+    if not estimates.empty and "od_hr_source" in estimates.columns:
+        e = estimates[estimates["Date"].map(parse_date) >= trend_start]
+        e = e[e["price_status"].astype(str) == "priced"]
+        for cid, grp in e.groupby("cluster_id", dropna=False):
+            w = grp.groupby("od_hr_source")["od_counterfactual"].sum()
+            if not w.empty:
+                basis_by_cluster[cid] = str(w.idxmax())
 
     for c in clusters:
         cid = c["id"]
@@ -344,6 +438,7 @@ def annotate_daily_and_summary(daily, estimates, clusters, pools, trend_days=30,
                 float(last_spot["Spot"].sum()) / float(last_spot["Compute total (USD)"].sum())
                 if len(last_spot) and float(last_spot["Compute total (USD)"].sum()) else 0.0),
             "verdict": verdict,
+            "rate_basis": rate_basis_label(basis_by_cluster.get(cid, "")),
             "note": "; ".join(note),
         })
 
@@ -826,6 +921,30 @@ def verdict_label(v):
     return VERDICT_LABEL.get(str(v), str(v))
 
 
+# Human label for the OD/RI rate that priced a cluster's headline saving. The raw
+# od_hr_source codes stay in the per-row detail; these labels go on summary tabs so
+# a reviewer can see at a glance whether the number is actual-billing or list-price.
+RATE_BASIS_LABEL = {
+    "pre_spot_history": "Actual (pre-spot history)",
+    "pre_spot_history_blend": "Actual (pre-spot history, blended)",
+    "concurrent_od_pool": "Actual (current OD/RI pool)",
+    "concurrent_od_pool_blend": "Actual (current OD/RI pool, blended)",
+    "retail_fallback": "Retail list price (fallback)",
+    "price_missing": "No rate available",
+    "": "n/a",
+}
+
+
+def rate_basis_label(code):
+    return RATE_BASIS_LABEL.get(str(code), str(code))
+
+
+def _is_actual_basis(code):
+    """True when the rate basis came from real billing (history or concurrent),
+    not the retail list-price fallback."""
+    return str(code).startswith("Actual")
+
+
 def _safe_div(num, den):
     if den in (0, None) or pd.isna(den) or float(den) == 0.0:
         return None
@@ -1131,10 +1250,12 @@ def recommendation_rows(clusters, pools, prices, risk_by_cluster, trend_days):
 
 def realized_savings_rows(summary, trend_days):
     """Slim fact-vs-model per cluster for the trust story: invoiced Spot spend is a
-    hard billed fact; the OD counterfactual and saving are retail-rate estimates."""
+    hard billed fact; the OD counterfactual and saving are priced from the cluster's
+    actual amortized OD/RI rate (rate_basis shows which - actual history/current pool
+    vs the retail list-price fallback)."""
     cols = ["cluster", "environment", "invoiced_spot_fact_usd",
             "od_counterfactual_model_usd", "est_saving_model_usd",
-            "savings_rate_pct", "status", "verdict"]
+            "savings_rate_pct", "rate_basis", "status", "verdict"]
     if summary is None or summary.empty:
         return pd.DataFrame(columns=cols)
     ac = "last_%d_actual_spot_cost" % trend_days
@@ -1145,6 +1266,7 @@ def realized_savings_rows(summary, trend_days):
         "cluster": s["cluster"], "environment": s["environment"],
         "invoiced_spot_fact_usd": s[ac], "od_counterfactual_model_usd": s[cf],
         "est_saving_model_usd": s[sv], "savings_rate_pct": _safe_div_vec(s[sv], s[cf]),
+        "rate_basis": s["rate_basis"] if "rate_basis" in s else "",
         "status": s["verdict"].map(verdict_label).fillna(s["verdict"]),
         "verdict": s["verdict"],
     })
@@ -1200,11 +1322,83 @@ def monthly_savings_rows(daily, today, months=MONTHLY_MONTHS,
     return pd.DataFrame(rows, columns=cols)
 
 
+def before_after_rows(daily, clusters, pools, trend_days):
+    """Per-environment (BU) before/after monthly cost - the management slide.
+
+    Uses the SAME defensible counterfactual as the rest of the report: 'after' is
+    what the fleet actually pays now; 'before' re-prices ONLY the Spot VMSS hours
+    at the on-demand retail rate (everything else identical), so the delta is the
+    spot saving attributable purely to the spot decision, while the two totals give
+    whole-bill context. Costs are run-rated to a calendar month over the trailing
+    trend window. One row per environment, sorted by saving; the chart is drawn over
+    these rows and a fleet total is appended with add_total_row."""
+    cols = ["environment", "clusters", "spot_clusters",
+            "monthly_on_demand_cost_usd", "monthly_actual_cost_usd",
+            "monthly_saving_usd", "saving_pct", "annualized_saving_usd", "status"]
+    win = _window_slice(daily, trend_days)
+    if win is None or win.empty:
+        return pd.DataFrame(columns=cols)
+    spot_ids = {p["cluster_id"] for p in pools
+                if str(p.get("priority", "")).lower() == "spot"}
+    cl_by_env, spot_by_env = defaultdict(set), defaultdict(set)
+    for c in clusters:
+        env = c["environment"] or "(unknown)"
+        cl_by_env[env].add(c["id"])
+        if c["id"] in spot_ids:
+            spot_by_env[env].add(c["id"])
+
+    w = win.copy()
+    w["environment"] = w["environment"].fillna("").replace("", "(unknown)")
+    days = w.groupby("environment")["Date"].nunique().to_dict()
+    agg = w.groupby("environment").agg(
+        total=("Total (USD)", "sum"),
+        spot=("actual_spot_cost", "sum"),
+        od_cf=("od_counterfactual", "sum"),
+        saving=("estimated_spot_saving", "sum")).reset_index()
+    rows = []
+    for _idx, r in agg.iterrows():
+        env = r["environment"]
+        f = DAYS_PER_MONTH / float(days.get(env, 0) or 1)   # daily -> monthly run-rate
+        after_mo = float(r["total"]) * f                     # actual, with spot
+        # saving is the priced counterfactual delta (>=0); 'before' adds it back so
+        # before = what the same workload would cost with those spot hours on-demand.
+        saving_mo = float(r["saving"]) * f
+        before_mo = after_mo + saving_mo
+        priced = float(r["od_cf"]) > 0.0
+        n_spot = len(spot_by_env.get(env, ()))
+        if n_spot == 0 and float(r["spot"]) <= 0.0:
+            status = "No spot adopted"
+        elif not priced:
+            status = "Pricing gap"
+        elif saving_mo > 0:
+            status = "Verified saving"
+        else:
+            status = "Inconclusive"
+        rows.append({
+            "environment": env,
+            "clusters": len(cl_by_env.get(env, ())),
+            "spot_clusters": n_spot,
+            "monthly_on_demand_cost_usd": before_mo,
+            "monthly_actual_cost_usd": after_mo,
+            "monthly_saving_usd": saving_mo,
+            "saving_pct": _safe_div(saving_mo, before_mo),
+            "annualized_saving_usd": saving_mo * 12.0,
+            "status": status,
+        })
+    df = pd.DataFrame(rows, columns=cols)
+    if not df.empty:
+        df = df.sort_values("monthly_saving_usd", ascending=False,
+                            na_position="last").reset_index(drop=True)
+    return df
+
+
 def scorecard_cards(summary, projection, daily, estimates, coverage_risk, trend_days):
     """Exec KPI cards (list of dicts for excel.add_scorecard). Separates the hard
-    billed fact (invoiced Spot spend) from the retail-model estimate (avoided cost),
-    surfaces coverage and the achieved-vs-achievable spot-discount gap, and closes
-    with the honest 3-state adoption read (savers / pricing gap / not adopted)."""
+    billed fact (invoiced Spot spend) from the avoided-cost estimate (priced from
+    each cluster's actual amortized OD/RI rate), surfaces coverage, the achieved-vs-
+    achievable spot-discount gap and how much of the saving is on a real-billing
+    basis, and closes with the 3-state adoption read (savers / pricing gap / not
+    adopted)."""
     s = summary if (summary is not None and not summary.empty) else pd.DataFrame()
     p = projection if (projection is not None and not projection.empty) else pd.DataFrame()
     cr = coverage_risk if (coverage_risk is not None and not coverage_risk.empty) else pd.DataFrame()
@@ -1249,6 +1443,14 @@ def scorecard_cards(summary, projection, daily, estimates, coverage_risk, trend_
     if not cr.empty:
         prod_on_spot = int(((cr["is_prod"] == "yes") & (cr["spot_nodes"] > 0)).sum())
 
+    # How much of the priced saving rests on actual billing vs the retail fallback.
+    n_priced, n_actual = 0, 0
+    if not s.empty and "rate_basis" in s:
+        priced_mask = s[cf].fillna(0.0) > 0
+        n_priced = int(priced_mask.sum())
+        n_actual = int(s.loc[priced_mask, "rate_basis"].map(_is_actual_basis).sum())
+    basis_rag = "neutral" if not n_priced else ("good" if n_actual == n_priced else "warn")
+
     if realized_rate is not None and achievable:
         rate_rag = "good" if realized_rate >= 0.8 * achievable else "warn"
     else:
@@ -1258,8 +1460,10 @@ def scorecard_cards(summary, projection, daily, estimates, coverage_risk, trend_
         {"label": "Invoiced Spot spend", "value": _fmt_money_compact(inv_mo) + "/mo",
          "caption": "actual billed (fact) - last %d-day run-rate" % days, "rag": "neutral"},
         {"label": "Est. avoided cost", "value": _fmt_money_compact(saved_mo) + "/mo",
-         "caption": "retail counterfactual (model) - approx %s/yr" % _fmt_money_compact(saved_mo * 12),
+         "caption": "actual-rate counterfactual - approx %s/yr" % _fmt_money_compact(saved_mo * 12),
          "rag": "good" if saved_mo > 0 else "neutral"},
+        {"label": "Actual-rate basis", "value": "%d / %d" % (n_actual, n_priced),
+         "caption": "saving priced from real billing vs retail fallback", "rag": basis_rag},
         {"label": "Verified savers", "value": "%d / %d" % (n_saving, n_spot),
          "caption": "clusters with a priced net saving", "rag": "good" if n_saving else "warn"},
         {"label": "Spot coverage", "value": _fmt_pct(coverage),
@@ -1305,6 +1509,10 @@ def main(argv=None):
                    help="keep only clusters that currently have a spot node pool in ARG "
                         "(default keeps the full fleet in scope; environment is inferred from "
                         "the cluster/RG name using -p-/-d-/-r- tokens)")
+    p.add_argument("--nonprod-spot", action="store_true",
+                   help="management shortcut: restrict to NON-PROD clusters that currently "
+                        "have a spot node pool (equivalent to --nonprod --only-spot-clusters); "
+                        "best paired with the BeforeAfterByEnv tab for a BU savings story")
     p.add_argument("--include-all-clusters", action="store_true",
                    help="DEPRECATED no-op kept for backward compatibility; the full fleet is "
                         "now kept by default. Use --only-spot-clusters for the opposite filter.")
@@ -1312,6 +1520,10 @@ def main(argv=None):
                    help="skip the per-spot-cluster node-RG Activity Log scan that feeds the "
                         "CoverageRisk vmss_churn_approx column (eviction+autoscale proxy)")
     args = p.parse_args(argv)
+    # --nonprod-spot is sugar for --nonprod --only-spot-clusters: forcing nonprod
+    # before pick_scope also satisfies should_prompt_scope so it never prompts.
+    if args.nonprod_spot:
+        args.nonprod = True
 
     today = dt.date.today()
     d_from, d_to = analysis_window(today, args.spot_trend_days, args.spot_baseline_days,
@@ -1325,7 +1537,7 @@ def main(argv=None):
     env_keys = [k.strip() for k in args.env_tag_keys.split(",") if k.strip()]
     clusters, pools = load_fleet(session, sel, env_filter, args.include_unknown_env, env_keys)
     dropped_total = 0
-    only_spot = args.only_spot_clusters or False
+    only_spot = args.only_spot_clusters or args.nonprod_spot
     if only_spot:
         spot_cluster_ids = {p["cluster_id"] for p in pools
                             if str(p.get("priority", "")).lower() == "spot"}
@@ -1348,7 +1560,11 @@ def main(argv=None):
     if not args.no_retail_prices:
         priced_pools = [p0 for p0 in pools if p0.get("vm_size")]
         prices = retail_price_lookup(priced_pools, args.currency) if priced_pools else {}
-    estimates = build_spot_estimates(cost["res"], pools, prices)
+    first_spot = first_spot_dates(daily, args.spot_threshold_usd)
+    max_date = parse_date(daily["Date"].max()) if not daily.empty else today
+    estimates = build_spot_estimates_actual(
+        cost["res"], pools, prices, first_spot, args.spot_baseline_days,
+        args.spot_trend_days, max_date, args.spot_threshold_usd)
     daily, summary = annotate_daily_and_summary(
         daily, estimates, clusters, pools, args.spot_trend_days, args.spot_baseline_days,
         args.min_baseline_days, args.spot_threshold_usd)
@@ -1394,6 +1610,7 @@ def main(argv=None):
                                           args.spot_trend_days)
     realized = realized_savings_rows(summary, args.spot_trend_days)
     monthly = monthly_savings_rows(daily, today)
+    before_after = before_after_rows(daily, clusters, pools, args.spot_trend_days)
     cards = scorecard_cards(summary, projection, daily, estimates, coverage_risk,
                             args.spot_trend_days)
     prdf = price_reference_rows(prices) if prices else pd.DataFrame(
@@ -1414,8 +1631,10 @@ def main(argv=None):
         (len(clusters), len(clusters) - dropped_total, cost["calls"], args.trim_days),
         "Scope filter: %s   Environment tier is inferred from the cluster/RG name "
         "(-d-/-s-/-r-/-p-/-u- -> dev/sit/dr/prod/uat) and rolled up to prod vs "
-        "non-prod in the SavingsByEnv tab." %
-        ("spot-clusters only (--only-spot-clusters)" if only_spot else "full fleet in scope"),
+        "non-prod in the BeforeAfterByEnv and SavingsByEnv tabs." %
+        ("non-prod spot clusters only (--nonprod-spot)" if args.nonprod_spot
+         else "spot-clusters only (--only-spot-clusters)" if only_spot
+         else "full fleet in scope"),
         "",
         "WHAT THIS REPORT SHOWS",
         "This workbook answers a single FinOps question for business owners: after our",
@@ -1425,19 +1644,24 @@ def main(argv=None):
         "",
         "STORY (read these):",
         "  1. Scorecard       - the one exec page: KPI cards separating the hard billed",
-        "     fact (invoiced Spot spend) from the retail-model estimate (avoided cost),",
-        "     plus coverage %, achieved-vs-achievable discount, untapped runway, prod-on-",
-        "     spot risk, and the 3-state adoption read (savers / pricing gap / not adopted).",
-        "  2. Recommendations - ranked OD->spot moves sized by retail saving. CANDIDATES",
+        "     fact (invoiced Spot spend) from the avoided-cost estimate (priced at each",
+        "     cluster's actual OD/RI rate), plus how much of the saving is on a real-",
+        "     billing basis, coverage %, achieved-vs-achievable discount, untapped runway,",
+        "     prod-on-spot risk, and the 3-state adoption read (savers / gap / not adopted).",
+        "  2. BeforeAfterByEnv- the BU slide: per-environment monthly cost BEFORE spot",
+        "     (priced at the actual OD/RI rate) vs AFTER (what we pay now), the saving and",
+        "     saving %, with a side-by-side bar chart and a fleet total. The delta uses the",
+        "     same actual-rate counterfactual as the rest of the report (spot isolated).",
+        "  3. Recommendations - ranked OD->spot moves sized by retail saving. CANDIDATES",
         "     ONLY: Reader access cannot see replicas/PDBs/statefulness, so every row says",
         "     verify_before_move and carries the cluster reliability band - never move a",
         "     pool on this list without checking the workload first.",
-        "  3. CoverageRisk    - per-cluster spot exposure + reliability band. Structural",
+        "  4. CoverageRisk    - per-cluster spot exposure + reliability band. Structural",
         "     signals are exact; vmss_churn_approx is a best-effort eviction proxy (it",
         "     mixes real evictions with autoscale-down - not separable at Reader scope).",
-        "  4. RealizedSavings - per-cluster fact-vs-model: invoiced Spot $ (billed fact)",
+        "  5. RealizedSavings - per-cluster fact-vs-model: invoiced Spot $ (billed fact)",
         "     beside the OD counterfactual and saving (retail estimates), with a badge.",
-        "  5. MonthlySavings  - last 3 calendar months (fleet total then per-cluster):",
+        "  6. MonthlySavings  - last 3 calendar months (fleet total then per-cluster):",
         "     spot spend, counterfactual, saving and savings rate per month. The current",
         "     month is month-to-date (partial); savings_from_spot_pool flags Yes only when",
         "     that month actually carried Spot VMSS spend (else 'No (no spot spend)').",
@@ -1447,17 +1671,26 @@ def main(argv=None):
         "due-diligence, SpotSavingsSummary technical detail, FleetDailyTrend, the daily/by-",
         "pool tables, and PriceReference/RawDailyCost.",
         "",
-        "HOW WE COUNT SAVINGS (so the number is defensible)",
+        "HOW WE COUNT SAVINGS (grounded in actual billing)",
         "We do NOT compare whole-cluster cost before vs after - that moves when",
         "workload, autoscaling, reservations, disks or cluster fees change, so it would",
-        "pretend spot saved money it didn't. Instead we use a retail counterfactual: for",
-        "every dollar actually spent on Spot VMSS, we convert it to spot node-hours at",
-        "the public Azure Spot retail rate, then re-price those same hours at the public",
-        "On-Demand rate. The difference is the saving attributable purely to spot. This is",
-        "the industry-standard 'avoided cost' method and it isolates the spot decision.",
-        "Invoiced Spot spend is a hard billed fact; the counterfactual and saving are",
-        "retail-rate estimates. Status badges: Verified saving / Inconclusive / Needs",
-        "review / Pricing gap / Not adopted.",
+        "pretend spot saved money it didn't. Instead, for every dollar actually spent on",
+        "Spot VMSS we read the billed node-hours (Cost Management amortized usage) and",
+        "re-price those same hours at the cluster's own ACTUAL On-Demand/RI rate. That",
+        "rate is back-tracked from the cluster's real amortized history - per VM size",
+        "where the data exists - so it reflects negotiated/RI/Savings-Plan pricing, not",
+        "list price, and varies cluster to cluster. The difference is the saving",
+        "attributable purely to spot ('avoided cost' method, isolating the spot decision).",
+        "",
+        "Each cluster's OD/RI rate is chosen by this ladder (rate_basis shows which):",
+        "  1. Pre-spot history  - the cluster's actual $/node-hour in the window BEFORE",
+        "     its first Spot day (the truest 'before it ran spot' comparison).",
+        "  2. Current OD/RI pool - the actual rate of the OD/RI pool it still runs in the",
+        "     trend window, when pre-spot history is too thin or out of retention.",
+        "  3. Retail list price - last-resort fallback when neither actual rate exists.",
+        "Invoiced Spot spend is a hard billed fact; the OD/RI rate is actual where",
+        "rate_basis says 'Actual', otherwise a retail estimate. Status badges: Verified",
+        "saving / Inconclusive / Needs review / Pricing gap / Not adopted.",
         "",
         "CONFIDENCE NOTES",
         "- First spot adoption is the first day Cost Management reports Spot spend",
@@ -1476,6 +1709,26 @@ def main(argv=None):
     ])
     excel.add_scorecard(wb, "Scorecard", cards, section="summary",
                         title="Spot savings at a glance (fact vs model)")
+    ws_ba = excel.add_table(wb, "BeforeAfterByEnv", before_after, section="summary",
+                            money_cols=("monthly_on_demand_cost_usd",
+                                        "monthly_actual_cost_usd",
+                                        "monthly_saving_usd", "annualized_saving_usd"),
+                            pct_cols=("saving_pct",),
+                            int_cols=("clusters", "spot_clusters"),
+                            fail_cols=("status",), fail_values=(),
+                            warn_values=("Pricing gap", "No spot adopted"),
+                            max_width=70)
+    if len(before_after) > 1:
+        od_col = list(before_after.columns).index("monthly_on_demand_cost_usd") + 1
+        act_col = list(before_after.columns).index("monthly_actual_cost_usd") + 1
+        excel.add_grouped_bar_chart(
+            ws_ba, "Monthly cost by environment: on-demand (before) vs actual with spot (after)",
+            len(before_after) + 1, od_col, act_col, "K2", y_title="USD / month")
+    if not before_after.empty:
+        excel.add_total_row(ws_ba, before_after,
+                            ("clusters", "spot_clusters", "monthly_on_demand_cost_usd",
+                             "monthly_actual_cost_usd", "monthly_saving_usd",
+                             "annualized_saving_usd"))
     excel.add_table(wb, "Recommendations", recommendations, section="summary",
                     money_cols=("est_monthly_saving_usd", "est_annual_saving_usd"),
                     int_cols=("rank", "current_od_nodes"),

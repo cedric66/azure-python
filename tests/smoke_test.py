@@ -578,24 +578,37 @@ def _cost_response(url, payload):
                         "Meter": r["meter"], "ResourceId": r["rid"]}[g])
         return tuple(out)
 
+    # When the caller asks for UsageQuantity, synthesize billed node-hours from a
+    # pseudo per-node-hour rate (spot cheaper than OD/RI) so the actual-amortized
+    # spot estimator derives a positive saving from cost/hours. agg[k] = [usd, qty].
+    want_qty = "usageQuantity" in (ds.get("aggregation") or {})
+    rate_for = lambda pm: 0.10 if str(pm).lower() == "spot" else 0.40
+
     agg = {}
+
+    def _add(k, usd, pm):
+        cur = agg.get(k) or [0.0, 0.0]
+        cur[0] += usd
+        cur[1] += usd / rate_for(pm)
+        agg[k] = cur
+
     for r in recs:
         if gran == "Daily":
             for day, frac in (("05", 0.6), ("15", 0.4)):
                 period = int("%s%s" % (r["month"].replace("-", ""), day))
-                k = keyfor(r) + (period,)
-                agg[k] = agg.get(k, 0.0) + r["usd"] * frac
+                _add(keyfor(r) + (period,), r["usd"] * frac, r["pm"])
         else:
             period = "%s-01T00:00:00" % r["month"]
-            k = keyfor(r) + (period,)
-            agg[k] = agg.get(k, 0.0) + r["usd"]
+            _add(keyfor(r) + (period,), r["usd"], r["pm"])
 
     datecol = "UsageDate" if gran == "Daily" else "BillingMonth"
     columns = ([{"name": "Cost", "type": "Number"}, {"name": "CostUSD", "type": "Number"}]
                + [{"name": g, "type": "String"} for g in groups]
                + [{"name": datecol, "type": "Number" if gran == "Daily" else "String"},
-                  {"name": "Currency", "type": "String"}])
-    rows = [[round(v, 4), round(v, 4)] + list(k[:-1]) + [k[-1], "USD"]
+                  {"name": "Currency", "type": "String"}]
+               + ([{"name": "UsageQuantity", "type": "Number"}] if want_qty else []))
+    rows = [[round(v[0], 4), round(v[0], 4)] + list(k[:-1]) + [k[-1], "USD"]
+            + ([round(v[1], 4)] if want_qty else [])
             for k, v in sorted(agg.items(), key=lambda kv: str(kv[0]))]
     return {"properties": {"columns": columns, "rows": rows, "nextLink": None}}
 
@@ -992,9 +1005,12 @@ def main():
 
     def chk_sections(wb):
         names = wb.sheetnames
-        _expect(names[0] == "ReadMe" and names[1] == "SummaryBySubscription"
+        _expect(names[0] == "ReadMe" and names[1] == "Scorecard"
                 and names[-1] == "RawMonthly",
                 "sections should order ReadMe, summary, detail, reference: %s" % names)
+        _expect(names.index("SummaryByEnvironment") < names.index("ClusterCosts")
+                and names.index("SummaryBySubscription") < names.index("ClusterCosts"),
+                "summary roll-ups should precede the detail tables: %s" % names)
         _expect(wb["SummaryBySubscription"].sheet_properties.tabColor is not None
                 and wb["RawMonthly"].sheet_properties.tabColor is not None,
                 "summary and reference tabs should be colored")
@@ -1003,11 +1019,40 @@ def main():
         _expect(any(str(v).startswith("Tab sections:") for v in readme),
                 "ReadMe should list the tab index")
 
+    def chk_cost_story(wb):
+        # Scorecard KPI cards (merged cells) - scan all cells for the hero labels.
+        card_text = {str(wb["Scorecard"].cell(row=r, column=c).value)
+                     for r in range(1, wb["Scorecard"].max_row + 1)
+                     for c in range(1, wb["Scorecard"].max_column + 1)}
+        for label in ("Fleet amortized spend", "Annualized run-rate", "RI/SP coverage",
+                      "Commitment opportunity", "Prod share"):
+            _expect(label in card_text, "Scorecard missing hero card %r" % label)
+        # SummaryByEnvironment: prod/non-prod tier roll-up (dev + prod in the fixture).
+        env_ws = wb["SummaryByEnvironment"]
+        env_hdr = [env_ws.cell(row=1, column=j).value for j in range(1, env_ws.max_column + 1)]
+        _expect("tier" in env_hdr and "Share %" in env_hdr,
+                "SummaryByEnvironment missing tier/Share %% columns: %s" % env_hdr)
+        tier_col = env_hdr.index("tier") + 1
+        tiers = {env_ws.cell(row=r, column=tier_col).value
+                 for r in range(2, env_ws.max_row + 1)}
+        _expect("prod" in tiers and "non-prod" in tiers,
+                "env roll-up should carry both prod and non-prod tiers: %s" % tiers)
+        # CommitmentOpportunity: steady-OD reservation candidates, ranked.
+        co_ws = wb["CommitmentOpportunity"]
+        co_hdr = [co_ws.cell(row=1, column=j).value for j in range(1, co_ws.max_column + 1)]
+        for col in ("Steady OD baseline (USD)", "Est monthly saving (USD)", "status"):
+            _expect(col in co_hdr, "CommitmentOpportunity missing %s" % col)
+        st_col = co_hdr.index("status") + 1
+        st = {co_ws.cell(row=r, column=st_col).value for r in range(2, co_ws.max_row + 1)}
+        _expect("RESERVE CANDIDATE" in st,
+                "fixture clusters should be reservation candidates: %s" % st)
+
     run(fleet_cost, base + ["--all", "--actual"],
-        ["ReadMe", "ClusterCosts", "PricingModelSplit", "TopMovers", "MeterChanges",
+        ["ReadMe", "Scorecard", "CommitmentOpportunity", "SummaryByEnvironment",
+         "ClusterCosts", "PricingModelSplit", "TopMovers", "MeterChanges",
          "SummaryBySubscription", "RawMonthly"],
         [lambda wb: _expect(wb["ClusterCosts"].max_row == 4, "3 clusters in ClusterCosts"),
-         chk_sections])
+         chk_cost_story, chk_sections])
 
     def chk_eol(wb):
         ws = wb["VersionStatus"]
@@ -1086,8 +1131,20 @@ def main():
                      for r in range(1, card.max_row + 1)
                      for c in range(1, card.max_column + 1)}
         for label in ("Invoiced Spot spend", "Est. avoided cost", "Spot coverage",
-                      "Verified savers", "Prod on spot"):
+                      "Verified savers", "Prod on spot", "Actual-rate basis"):
             _expect(label in card_text, "Scorecard missing hero card %r" % label)
+        # RealizedSavings carries the rate_basis, and with no retail prices the
+        # fixture's spot savings must still be priced from ACTUAL amortized billing
+        # (the cluster's current OD/RI pool rate), never the retail fallback.
+        rs = wb["RealizedSavings"]
+        rs_headers = [rs.cell(row=1, column=j).value for j in range(1, rs.max_column + 1)]
+        _expect("rate_basis" in rs_headers, "RealizedSavings missing rate_basis")
+        rb_col = rs_headers.index("rate_basis") + 1
+        bases = {rs.cell(row=r, column=rb_col).value for r in range(2, rs.max_row + 1)}
+        _expect(any(str(b).startswith("Actual") for b in bases),
+                "spot savings should be priced from actual amortized billing: %s" % bases)
+        _expect(not any("Retail" in str(b) for b in bases),
+                "fixture has actual OD/RI usage, so retail fallback should not be used: %s" % bases)
         # Recommendations: ranked OD->spot candidates with the suitability caveat.
         rec_headers = [wb["Recommendations"].cell(row=1, column=j).value
                        for j in range(1, wb["Recommendations"].max_column + 1)]
@@ -1132,6 +1189,17 @@ def main():
         ms_clusters = {ms.cell(row=r, column=clu_col).value for r in range(2, ms.max_row + 1)}
         _expect("(all clusters)" in ms_clusters,
                 "MonthlySavings should include a fleet-total row: %s" % ms_clusters)
+        # BeforeAfterByEnv: per-environment before/after management slide + chart.
+        _expect("BeforeAfterByEnv" in wb.sheetnames,
+                "spot savings workbook should include the BeforeAfterByEnv slide")
+        ba = wb["BeforeAfterByEnv"]
+        ba_headers = [ba.cell(row=1, column=j).value
+                      for j in range(1, ba.max_column + 1)]
+        for col in ("environment", "monthly_on_demand_cost_usd",
+                    "monthly_actual_cost_usd", "monthly_saving_usd", "status"):
+            _expect(col in ba_headers, "BeforeAfterByEnv missing %s" % col)
+        _expect(len(ba._charts) >= 1,
+                "BeforeAfterByEnv should include a before/after bar chart")
         # SavingsByEnv rolls clusters up to prod vs non-prod tiers.
         _expect("SavingsByEnv" in wb.sheetnames,
                 "spot savings workbook should include the SavingsByEnv tier roll-up")
@@ -1156,7 +1224,8 @@ def main():
                 "default spot-savings should keep the full fleet in scope: %s" % kept)
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0"],
-        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings", "MonthlySavings",
+        ["ReadMe", "Scorecard", "BeforeAfterByEnv", "CoverageRisk", "RealizedSavings",
+         "MonthlySavings",
          "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
          "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily", "SpotSavingsByPool", "RawDailyCost"],
@@ -1164,7 +1233,8 @@ def main():
 
     run(aks_report, ["spot-savings"] + base + ["--all", "--no-retail-prices",
                                                "--trim-days", "0"],
-        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings", "MonthlySavings",
+        ["ReadMe", "Scorecard", "BeforeAfterByEnv", "CoverageRisk", "RealizedSavings",
+         "MonthlySavings",
          "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
          "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily"],
@@ -1184,11 +1254,35 @@ def main():
 
     run(spot_savings, base + ["--all", "--no-retail-prices", "--trim-days", "0",
                               "--only-spot-clusters"],
-        ["ReadMe", "Scorecard", "CoverageRisk", "RealizedSavings", "MonthlySavings",
+        ["ReadMe", "Scorecard", "BeforeAfterByEnv", "CoverageRisk", "RealizedSavings",
+         "MonthlySavings",
          "SpotTimeline", "TopSavers", "SavingsProjection", "SavingsByEnv", "BeforeSpot",
          "AfterSpot", "ActualVsProjection", "SpotSavingsSummary", "FleetDailyTrend",
          "SpotSavingsDaily"],
         [chk_only_spot])
+
+    def chk_nonprod_spot(wb):
+        # --nonprod-spot == non-prod AND a current spot pool: only aks-dev-01 qualifies
+        # (aks-prod-01 is prod; aks-dev-02 is non-prod but has no spot pool).
+        ws = wb["SpotSavingsSummary"]
+        headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        cluster_col = headers.index("cluster") + 1
+        kept = {ws.cell(row=r, column=cluster_col).value
+                for r in range(2, ws.max_row + 1)}
+        _expect("aks-dev-01" in kept, "--nonprod-spot should keep the non-prod spot cluster: %s" % kept)
+        _expect("aks-prod-01" not in kept, "--nonprod-spot should drop the prod cluster: %s" % kept)
+        _expect("aks-dev-02" not in kept,
+                "--nonprod-spot should drop the non-prod cluster with no spot pool: %s" % kept)
+        # the before/after slide should roll up only the non-prod tier
+        env_ws = wb["BeforeAfterByEnv"]
+        envs = {env_ws.cell(row=r, column=1).value for r in range(2, env_ws.max_row + 1)}
+        _expect("prod" not in envs, "--nonprod-spot BeforeAfterByEnv should carry no prod row: %s" % envs)
+
+    run(spot_savings, base + ["--nonprod-spot", "--no-retail-prices", "--trim-days", "0"],
+        ["ReadMe", "Scorecard", "BeforeAfterByEnv", "CoverageRisk", "RealizedSavings",
+         "MonthlySavings", "SpotTimeline", "TopSavers", "SavingsByEnv",
+         "SpotSavingsSummary"],
+        [chk_nonprod_spot])
 
     run(utilization_idle, base + ["--all", "--days", "3"],
         ["ReadMe", "Utilization", "IdleCandidates", "Stopped", "Summary"])

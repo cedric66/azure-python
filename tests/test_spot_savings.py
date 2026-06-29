@@ -315,6 +315,97 @@ def test_monthly_savings_three_month_rollup_and_flag():
            "the current calendar month should be marked month-to-date (partial)")
 
 
+RID_BASE = ("/subscriptions/s/resourceGroups/MC_rg/providers/"
+            "Microsoft.Compute/virtualMachineScaleSets/")
+
+
+def _res_row(vmss, pm, cost, qty, day):
+    return {
+        "cluster_id": CLUSTER["id"], "cluster": CLUSTER["cluster"],
+        "subscription": CLUSTER["subscription"], "environment": CLUSTER["environment"],
+        "location": CLUSTER["location"], "Date": day, "ResourceId": RID_BASE + vmss,
+        "PricingModel": pm, "CostUSD": float(cost), "UsageQuantity": float(qty),
+    }
+
+
+def actual_res_rows(start, days, spot_start, od_hr=0.40, spot_hr=0.10,
+                    od_nodes=4, spot_nodes=2, with_od=True):
+    """res-shaped daily rows with billed node-hours: an OnDemand wrk pool (when
+    with_od) every day and a Spot spt pool from spot_start, at the given rates."""
+    rows, start_d = [], dt.date.fromisoformat(start)
+    for i in range(days):
+        day = (start_d + dt.timedelta(days=i)).isoformat()
+        if with_od:
+            oh = od_nodes * 24
+            rows.append(_res_row("aks-wrk-11111111-vmss", "OnDemand", oh * od_hr, oh, day))
+        if i >= spot_start:
+            sh = spot_nodes * 24
+            rows.append(_res_row("aks-spt-11111111-vmss", "Spot", sh * spot_hr, sh, day))
+    return pd.DataFrame(rows)
+
+
+def test_actual_amortized_rate_ladder():
+    max_date = dt.date(2026, 5, 1) + dt.timedelta(days=59)
+    # 1. pre-spot history: 30 OD days before the first spot day -> actual baseline rate
+    res = actual_res_rows("2026-05-01", 60, 30)
+    fs = {CLUSTER["id"]: dt.date(2026, 5, 31)}
+    est = spot_savings.build_spot_estimates_actual(
+        res, FULL_POOLS, {}, fs, baseline_days=30, trend_days=30, max_date=max_date)
+    expect(not est.empty, "actual estimator should emit priced spot rows")
+    expect((est["od_hr_source"] == "pre_spot_history").all(),
+           "pre-spot OD history should drive the rate: %s" % set(est["od_hr_source"]))
+    expect(abs(float(est.iloc[0]["od_hr"]) - 0.40) < 1e-9,
+           "actual OD rate should be cost/node-hours = 0.40: %s" % est.iloc[0]["od_hr"])
+    expect(abs(float(est.iloc[0]["estimated_spot_saving"]) - (48 * (0.40 - 0.10))) < 1e-6,
+           "saving = spot node-hours * (od_hr - spot_hr): %s" % est.iloc[0]["estimated_spot_saving"])
+
+    # 2. no pre-spot window -> fall back to the concurrent OD/RI pool's actual rate
+    res2 = actual_res_rows("2026-05-01", 60, 0)
+    fs2 = {CLUSTER["id"]: dt.date(2026, 5, 1)}
+    est2 = spot_savings.build_spot_estimates_actual(
+        res2, FULL_POOLS, {}, fs2, baseline_days=30, trend_days=30, max_date=max_date)
+    expect((est2["od_hr_source"] == "concurrent_od_pool").all(),
+           "with no pre-spot history, the current OD/RI pool rate should be used: %s"
+           % set(est2["od_hr_source"]))
+
+    # 3. no OD/RI data at all -> retail list price is the last-resort fallback
+    res3 = actual_res_rows("2026-05-01", 60, 30, with_od=False)
+    est3 = spot_savings.build_spot_estimates_actual(
+        res3, FULL_POOLS, PRICES, fs, baseline_days=30, trend_days=30, max_date=max_date)
+    expect((est3["od_hr_source"] == "retail_fallback").all(),
+           "with no actual OD data, retail price should be the fallback: %s"
+           % set(est3["od_hr_source"]))
+    # and without retail prices either, it must not claim a saving
+    est4 = spot_savings.build_spot_estimates_actual(
+        res3, FULL_POOLS, {}, fs, baseline_days=30, trend_days=30, max_date=max_date)
+    expect((est4["price_status"] == "price_missing").all(),
+           "no actual rate and no retail price must be price_missing: %s"
+           % set(est4["price_status"]))
+
+
+def test_before_after_by_env_rows():
+    daily = daily_rows("2026-05-01", 60, 30, total_growth=True)
+    estimates = estimate_rows("2026-05-01", 60, 30)
+    annotated, _summary = spot_savings.annotate_daily_and_summary(
+        daily, estimates, [CLUSTER], FULL_POOLS, trend_days=30, baseline_days=30)
+    ba = spot_savings.before_after_rows(annotated, [CLUSTER], FULL_POOLS, 30)
+    expect(len(ba) == 1, "one environment row expected: %s" % ba.to_dict("records"))
+    row = ba.iloc[0]
+    expect(row["environment"] == "dev", "row should roll up to the dev environment")
+    expect(row["spot_clusters"] == 1 and row["clusters"] == 1,
+           "dev should count one cluster, one with a spot pool")
+    expect(row["monthly_on_demand_cost_usd"] > row["monthly_actual_cost_usd"],
+           "before (all-on-demand) should exceed after (with spot)")
+    f = spot_savings.DAYS_PER_MONTH / 30.0
+    expect(abs(float(row["monthly_saving_usd"]) - 900.0 * f) < 1e-6,
+           "monthly saving should be the counterfactual delta run-rated: %s" %
+           row["monthly_saving_usd"])
+    expect(abs(float(row["saving_pct"]) - 900.0 / 4950.0) < 1e-9,
+           "saving %% should be saving/before: %s" % row["saving_pct"])
+    expect(row["status"] == "Verified saving",
+           "a priced positive saving should read Verified saving: %s" % row["status"])
+
+
 def main():
     test_counterfactual_saving_even_when_total_grows()
     test_before_after_projection_tables_and_chart()
@@ -323,6 +414,8 @@ def main():
     test_coverage_risk_recommendations_and_realized()
     test_vmss_churn_events_keeps_compute_drops_containerservice()
     test_monthly_savings_three_month_rollup_and_flag()
+    test_actual_amortized_rate_ladder()
+    test_before_after_by_env_rows()
     print("\nALL SPOT-SAVINGS TESTS PASSED")
 
 
