@@ -129,6 +129,14 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 - Cost queries: always subscription scope grouped by node resource group
   (chunks of RG_CHUNK=30), never per cluster. Current month is MTD; MoM/trend
   comparisons use full months only (`fleet_cost.last_full_prev`).
+- Cost Management caps BOTH `grouping` and `aggregation` at **2 items** each;
+  exceeding either 400s with "Invalid dataset aggregation, the maximum allowed
+  number of items is 2" (the smoke mock now asserts both). A 3rd dimension you
+  only slice on stays a `dim_in` filter (filters don't count) - `spot_savings`
+  groups `(ResourceId, PricingModel)` and recovers the node RG via
+  `rg_from_resource_id`. `with_quantity=True` therefore drops the separate
+  CostUSD aggregation (Cost + UsageQuantity = 2; CostUSD mirrored from Cost), so
+  it cannot be combined with a 2-grouping query that also needs ResourceGroupName.
 - Metrics: `connect(min_interval=0.15)` and skip stopped clusters.
 - Cluster identity: cluster names can collide across subscriptions; prefer
   keying by `c["id"].lower()` / pool `cluster_id` (governance/fleet_cost still
@@ -214,8 +222,11 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   retail list price** (`build_spot_estimates_actual`, the only estimator now - the
   old retail-only `build_spot_estimates` was removed). For each spot VMSS day we
   read billed node-hours from Cost Management `UsageQuantity` (CostClient.query
-  gained a `with_quantity` flag adding a usageQuantity Sum aggregation; the
-  spot_savings res query passes it) and re-price those hours at the cluster's own
+  gained a `with_quantity` flag adding a usageQuantity Sum aggregation in place of
+  the CostUSD one - CostUSD is mirrored from Cost - to respect the 2-aggregation
+  cap; the spot_savings res query passes it and groups only `(ResourceId,
+  PricingModel)`, recovering the node RG from the id via `rg_from_resource_id`)
+  and re-price those hours at the cluster's own
   effective OD/RI $/node-hour = sum(CostUSD)/sum(UsageQuantity) (`_effective_rate_table`).
   The rate is chosen by a ladder (`_pick_od_hr`, recorded in `od_hr_source`):
   pre_spot_history (per VM size, then cluster blend, from the baseline window

@@ -550,6 +550,13 @@ def _cost_response(url, payload):
     ds = payload["dataset"]
     gran = ds.get("granularity", "Monthly")
     groups = [g["name"] for g in ds.get("grouping", [])]
+    # Cost Management rejects queries whose grouping OR aggregation exceeds 2
+    # items ("Invalid dataset aggregation, the maximum allowed number of items
+    # is 2"). The real API enforces this; mirror it so the mock catches the
+    # regression instead of it only surfacing against live Azure.
+    assert len(groups) <= 2, "Cost query grouping exceeds 2 items: %s" % groups
+    assert len(ds.get("aggregation") or {}) <= 2, \
+        "Cost query aggregation exceeds 2 items: %s" % list((ds.get("aggregation") or {}))
     metric = payload.get("type", "AmortizedCost")
     if "ServiceName" in groups:
         return _rearch_cost(payload, groups)

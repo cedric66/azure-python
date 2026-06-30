@@ -62,12 +62,20 @@ class CostClient:
               with_quantity=False):
         """Returns a DataFrame with Cost, CostUSD, Period and one column per grouping.
         with_quantity adds a UsageQuantity column (billed usage units, e.g. node-hours
-        for VM/VMSS compute meters) so callers can derive an actual effective rate."""
+        for VM/VMSS compute meters) so callers can derive an actual effective rate.
+        Because the API caps aggregation at 2 items, with_quantity swaps out the
+        separate CostUSD aggregation; CostUSD is then mirrored from Cost (billing
+        currency), which matches the existing no-USD fallback behavior."""
         self._pace()
         self.calls += 1
         ds = {"granularity": granularity,
               "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}}}
-        if _with_usd:
+        # Cost Management allows at most 2 aggregation items. Normally that's
+        # Cost + CostUSD; when the caller also needs UsageQuantity we drop the
+        # separate CostUSD aggregation (it's backfilled from Cost below) so the
+        # request stays within the cap instead of 400-ing with "Invalid dataset
+        # aggregation, the maximum allowed number of items is 2".
+        if _with_usd and not with_quantity:
             ds["aggregation"]["totalCostUSD"] = {"name": "CostUSD", "function": "Sum"}
         if with_quantity:
             ds["aggregation"]["usageQuantity"] = {"name": "UsageQuantity", "function": "Sum"}

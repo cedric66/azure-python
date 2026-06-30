@@ -70,6 +70,16 @@ def analysis_window(today, trend_days, baseline_days, trim_days, lookback_days):
     return d_from, d_to
 
 
+def rg_from_resource_id(resource_id):
+    # Recover the resource group from an ARM id (.../resourceGroups/<rg>/...) so
+    # we don't need a 3rd grouping dimension on the Cost Management query.
+    parts = str(resource_id or "").split("/")
+    for i, p in enumerate(parts):
+        if p.lower() == "resourcegroups" and i + 1 < len(parts):
+            return parts[i + 1]
+    return ""
+
+
 def attach_resource_rows(frames, rg_map):
     cols = ["cluster_id", "cluster", "subscription", "environment", "location",
             "ResourceGroupName", "ResourceId", "PricingModel", "Period", "Date",
@@ -81,6 +91,8 @@ def attach_resource_rows(frames, rg_map):
         return pd.DataFrame(columns=cols)
     if "UsageQuantity" not in df.columns:
         df["UsageQuantity"] = 0.0
+    if "ResourceGroupName" not in df.columns:
+        df["ResourceGroupName"] = df["ResourceId"].map(rg_from_resource_id)
     key = list(zip(df["subscription_id"], df["ResourceGroupName"].str.lower()))
     df["cluster_id"] = [rg_map.get(k, {}).get("id", "") for k in key]
     df["cluster"] = [rg_map.get(k, {}).get("cluster", "(unmatched)") for k in key]
@@ -128,8 +140,11 @@ def collect_daily_cost(session, clusters, d_from, d_to):
         log("[%d/%d] %s: daily cost for %d node resource group(s)"
             % (i, n_subs, cls[0]["subscription"], len(rgs)))
         for ch in chunks(rgs, RG_CHUNK):
+            # Cost Management caps grouping at 2 dimensions; the node RG stays a
+            # filter (filters don't count) and is recovered from ResourceId in
+            # attach_resource_rows. with_quantity uses the 2nd aggregation slot.
             df = cost.query(scope, "AmortizedCost", "Daily",
-                            ("ResourceGroupName", "ResourceId", "PricingModel"),
+                            ("ResourceId", "PricingModel"),
                             dim_in("ResourceGroupName", ch), d_from, d_to,
                             with_quantity=True)
             if not df.empty:
