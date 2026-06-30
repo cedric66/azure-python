@@ -25,6 +25,13 @@ from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_
 
 RG_CHUNK = 30
 
+# Control-plane (sku.tier) approximate hourly rates over the cluster fee. A
+# non-prod cluster on a paid tier is pure waste; a prod cluster on Free has no
+# financially-backed SLA (risk note, not a saving). Pricing drifts - kept as
+# named constants so the off-hours/tier flags can be re-tuned.
+TIER_HOURLY = {"Free": 0.0, "Standard": 0.012, "Premium": 0.60}
+HOURS_PER_MONTH = 730
+
 
 def chunks(lst, n):
     for i in range(0, len(lst), n):
@@ -82,6 +89,11 @@ def main(argv=None):
                    help="screening estimate for underutilized high-cost clusters")
     p.add_argument("--spot-savings-pct", type=float, default=0.50,
                    help="screening estimate for non-prod on-demand user-pool spend")
+    p.add_argument("--offhours-pct", type=float, default=0.65,
+                   help="fraction of non-prod node compute avoidable via nightly + "
+                        "weekend start/stop scheduling (screening estimate)")
+    p.add_argument("--no-tier-candidates", action="store_true",
+                   help="do not surface control-plane tier (Free/Standard/Premium) candidates")
     args = p.parse_args(argv)
 
     subs = load_subscriptions(args.csv)
@@ -276,6 +288,61 @@ def main(argv=None):
                 "estimated_monthly_saving": None,
                 "reason": "Last full month increased %.0f%% vs previous full month." % (mom_pct * 100),
             })
+        # Control-plane tier (FREE/STANDARD/PREMIUM). A non-prod cluster on a
+        # paid tier (Standard/Premium) is pure waste; a prod cluster on Free is a
+        # financially-backed-SLA risk note (no saving). Pricing = TIER_HOURLY *
+        # 730. This is an estimate from config + a static tier rate - verify the
+        # current per-tier price before changes (Premium/LTS may be deliberate).
+        if not args.no_tier_candidates:
+            tier = c.get("sku_tier") or "Free"
+            tier_rate = TIER_HOURLY.get(tier, 0.0)
+            if not is_prod(c["environment"]) and tier in ("Standard", "Premium") \
+                    and tier_rate > 0:
+                flags.append("CONTROL_PLANE_TIER")
+                saving = round(tier_rate * HOURS_PER_MONTH, 2)
+                candidate_rows.append({
+                    "cluster": c["cluster"], "subscription": c["subscription"],
+                    "environment": c["environment"], "candidate": "CONTROL_PLANE_TIER",
+                    "priority": "MEDIUM",
+                    "avg_monthly_cost": avg_full,
+                    "estimated_monthly_saving": saving,
+                    "reason": "Non-prod cluster on %s tier (~$%.2f/mo). Downgrade to "
+                              "Free (no financially-backed SLA, acceptable for non-prod)." %
+                              (tier, saving),
+                })
+            elif is_prod(c["environment"]) and tier == "Free":
+                flags.append("CONTROL_PLANE_TIER")
+                candidate_rows.append({
+                    "cluster": c["cluster"], "subscription": c["subscription"],
+                    "environment": c["environment"], "candidate": "CONTROL_PLANE_TIER",
+                    "priority": "LOW",
+                    "avg_monthly_cost": avg_full,
+                    "estimated_monthly_saving": None,
+                    "reason": "Prod cluster on Free tier - no financially-backed SLA. "
+                              "Review; Standard (~$%.0f/mo) buys Uptime SLA." %
+                              (round(TIER_HOURLY["Standard"] * HOURS_PER_MONTH)),
+                })
+        # Non-prod off-hours start/stop scheduling. Whether a cluster is used in
+        # business hours only is not visible at Reader scope, so this screens by
+        # environment (non-prod) + run-rate; saving = avg node compute * the
+        # off-hours fraction (--offhours-pct, default ~65%). Stop != free:
+        # managed disks, public IPs and the cluster fee still bill - called out
+        # like the STOPPED note. Skipped when the cluster is already stopped.
+        if not is_prod(c["environment"]) and c["power_state"].lower() != "stopped" \
+                and avg_full >= args.min_monthly_cost:
+            flags.append("OFFHOURS_STOP_CANDIDATE")
+            saving = round(avg_full * args.offhours_pct, 2)
+            candidate_rows.append({
+                "cluster": c["cluster"], "subscription": c["subscription"],
+                "environment": c["environment"], "candidate": "OFFHOURS_STOP_CANDIDATE",
+                "priority": "MEDIUM",
+                "avg_monthly_cost": avg_full,
+                "estimated_monthly_saving": saving,
+                "reason": "Non-prod cluster running 24/7. Nightly + weekend stop could "
+                          "cut ~%d%% of node compute. Stop != free (disks/IPs/fee remain); "
+                          "validate against actual usage before scheduling." %
+                          round(args.offhours_pct * 100),
+            })
 
         cluster_rows.append({
             "cluster": c["cluster"],
@@ -351,6 +418,10 @@ def main(argv=None):
          if not cand.empty else 0),
         ("RI/SP commitment review candidates", int((cand["candidate"] == "RI_SP_COMMITMENT_REVIEW").sum())
          if not cand.empty else 0),
+        ("Control-plane tier candidates", int((cand["candidate"] == "CONTROL_PLANE_TIER").sum())
+         if not cand.empty else 0),
+        ("Off-hours stop candidates", int((cand["candidate"] == "OFFHOURS_STOP_CANDIDATE").sum())
+         if not cand.empty else 0),
     ], columns=["Item", "Value"])
 
     wb = excel.new_workbook()
@@ -365,8 +436,12 @@ def main(argv=None):
         "",
         "Estimated savings are intentionally simple: stopped-billing uses recent monthly",
         "run-rate; rightsizing uses --rightsizing-savings-pct; spot review uses",
-        "--spot-savings-pct against on-demand spend. Validate top rows with",
-        "cluster_deepdive.py before changing node pools.",
+        "--spot-savings-pct against on-demand spend; control-plane tier uses a static",
+        "per-tier hourly rate (verify current pricing); off-hours stop uses",
+        "--offhours-pct against the cluster's node-compute run-rate. Stop != free",
+        "(disks/IPs/fee remain). Immutable-after-create properties (spot, ephemeral OS",
+        "disk) mean the action is new pool + migrate, never in-place. Validate top",
+        "rows with cluster_deepdive.py before changing node pools.",
     ])
     excel.add_table(wb, "Summary", exec_summary, max_width=90, section="summary")
     ws_cand = excel.add_table(wb, "SavingsCandidates", cand,

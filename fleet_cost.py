@@ -25,10 +25,15 @@ from azrep import excel
 from azrep.costmgmt import CostClient, default_window, dim_in
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
-from azrep.subs import base_parser, load_subscriptions, out_path, pick_scope
+from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_scope
 
 RG_CHUNK = 30
 PM_ORDER = ["OnDemand", "Spot", "Reservation", "SavingsPlan"]
+RISP_PM = ("reservation", "reservations", "savingsplan", "savings plan")
+COMMIT_DISCOUNT_DEFAULT = 0.30   # indicative 1-yr savings-plan/reservation discount
+COMMIT_MIN_USD = 50.0            # ignore trivial steady OnDemand baselines
+COMMIT_COVERED = 0.70            # already-committed coverage that needs no further action
+SPIKE_MOM = 0.25                 # MoM growth that counts as a cost spike on the scorecard
 
 
 def chunks(lst, n):
@@ -45,12 +50,175 @@ def last_full_prev(months):
     return (None, full[-1]) if full else (None, None)
 
 
+def _safe_div(num, den):
+    return float(num) / float(den) if den else None
+
+
+def _fmt_money_compact(v):
+    """$1.2M / $12.3k / $540 for KPI cards (None/NaN -> 'n/a')."""
+    if v is None or pd.isna(v):
+        return "n/a"
+    v = float(v)
+    sign, a = ("-" if v < 0 else ""), abs(v)
+    if a >= 1e6:
+        return "%s$%.1fM" % (sign, a / 1e6)
+    if a >= 1e3:
+        return "%s$%.1fk" % (sign, a / 1e3)
+    return "%s$%.0f" % (sign, a)
+
+
+def _fmt_pct(frac):
+    if frac is None or pd.isna(frac):
+        return "n/a"
+    return "%.0f%%" % (float(frac) * 100.0)
+
+
+def env_summary_rows(pm, months):
+    """Per-environment amortized roll-up, one tier up from ClusterCosts. Adds a
+    prod/non-prod `tier` (azrep.subs.is_prod, the same resolution every report uses)
+    plus window total, fleet share % and MoM %. Formula columns anchor to row
+    numbers, so the frame is sorted before they are added and not re-sorted after."""
+    if pm.empty:
+        return pd.DataFrame()
+    ev = pm.copy()
+    ev["environment"] = ev["environment"].replace("", "(unknown)").fillna("(unknown)")
+    piv = ev.pivot_table(index="environment", columns="Month", values="CostUSD",
+                         aggfunc="sum").fillna(0.0)
+    for m in months:
+        if m not in piv.columns:
+            piv[m] = 0.0
+    piv = piv[months].reset_index()
+    piv.insert(1, "tier", ["prod" if is_prod(e) else "non-prod" for e in piv["environment"]])
+    prev_m, last_m = last_full_prev(months)
+    piv = piv.sort_values(last_m or months[-1], ascending=False).reset_index(drop=True)
+    nmeta, n = 2, len(piv)
+    first_l = excel.get_column_letter(nmeta + 1)
+    last_l = excel.get_column_letter(nmeta + len(months))
+    tot_l = excel.get_column_letter(nmeta + len(months) + 1)
+    piv["Window total (USD)"] = ["=SUM(%s%d:%s%d)" % (first_l, r, last_l, r)
+                                 for r in range(2, n + 2)]
+    piv["Share %"] = ["=IF(SUM(%s$2:%s$%d)=0,\"\",%s%d/SUM(%s$2:%s$%d))"
+                      % (tot_l, tot_l, n + 1, tot_l, r, tot_l, tot_l, n + 1)
+                      for r in range(2, n + 2)]
+    if prev_m and last_m:
+        pl = excel.get_column_letter(nmeta + 1 + months.index(prev_m))
+        ll = excel.get_column_letter(nmeta + 1 + months.index(last_m))
+        piv["MoM %"] = ["=IF(%s%d=0,\"\",(%s%d-%s%d)/%s%d)" % (pl, r, ll, r, pl, r, pl, r)
+                        for r in range(2, n + 2)]
+    return piv
+
+
+def commitment_rows(pm, months, risp, discount):
+    """Steady OnDemand spend = reservation / savings-plan candidate. Baseline is the
+    MIN OnDemand spend across FULL months (a conservative committed floor); the saving
+    is an indicative baseline*discount. The pricing-model query has no meter axis, so
+    storage/non-VM OnDemand spend is included here - this surfaces candidates, VM SKU
+    eligibility and term must be verified before purchase."""
+    if pm.empty:
+        return pd.DataFrame()
+    od = pm[pm["PricingModel"].astype(str).str.lower() == "ondemand"]
+    if od.empty:
+        return pd.DataFrame()
+    cur = dt.date.today().strftime("%Y-%m")
+    full = [m for m in months if m != cur] or list(months)
+    piv = od.pivot_table(index=["cluster", "subscription", "environment"],
+                         columns="Month", values="CostUSD", aggfunc="sum").fillna(0.0)
+    for m in full:
+        if m not in piv.columns:
+            piv[m] = 0.0
+    piv = piv.reset_index()
+    full_cols = [m for m in full if m in piv.columns]
+    base = piv[full_cols].min(axis=1)
+    od_win = od.groupby("cluster")["CostUSD"].sum()
+    out = piv[["cluster", "subscription", "environment"]].copy()
+    out["OD avg/mo (USD)"] = piv[full_cols].mean(axis=1).round(2)
+    out["Steady OD baseline (USD)"] = base.round(2)
+    out["RI+SP (USD)"] = out["cluster"].map(risp).fillna(0.0).round(2)
+    out["OD window (USD)"] = out["cluster"].map(od_win).fillna(0.0).round(2)
+    denom = out["OD window (USD)"] + out["RI+SP (USD)"]
+    out["Commitment coverage"] = [(_safe_div(r, d) or 0.0)
+                                  for r, d in zip(out["RI+SP (USD)"], denom)]
+    out["Est monthly saving (USD)"] = (base * float(discount)).round(2)
+    out["Est annual saving (USD)"] = (base * float(discount) * 12.0).round(2)
+
+    def status(b, c):
+        if b < COMMIT_MIN_USD:
+            return "LOW / SKIP"
+        return "COVERED" if c >= COMMIT_COVERED else "RESERVE CANDIDATE"
+
+    out["status"] = [status(b, c) for b, c in
+                     zip(out["Steady OD baseline (USD)"], out["Commitment coverage"])]
+    out = out[out["Steady OD baseline (USD)"] >= COMMIT_MIN_USD]
+    return out.sort_values("Est monthly saving (USD)", ascending=False).reset_index(drop=True)
+
+
+def scorecard_cards(pm, months, commit, discount):
+    """Fleet exec KPI cards (list of dicts for excel.add_scorecard). The current MTD
+    month is excluded from MoM/run-rate math; commitment opportunity comes from
+    commitment_rows so the headline and the action tab agree."""
+    prev_m, last_m = last_full_prev(months)
+    total = float(pm["CostUSD"].sum())
+    last_full = float(pm[pm["Month"] == last_m]["CostUSD"].sum()) if last_m else 0.0
+    prev_full = float(pm[pm["Month"] == prev_m]["CostUSD"].sum()) if prev_m else 0.0
+    mom = _safe_div(last_full - prev_full, prev_full)
+    pml = pm["PricingModel"].astype(str).str.lower()
+    spot_cov = _safe_div(float(pm[pml == "spot"]["CostUSD"].sum()), total)
+    risp_cov = _safe_div(float(pm[pml.isin(RISP_PM)]["CostUSD"].sum()), total)
+    prod_share = _safe_div(float(pm[pm["environment"].map(is_prod)]["CostUSD"].sum()), total)
+    by_cl = pm.groupby("cluster")["CostUSD"].sum().sort_values(ascending=False)
+    top5 = _safe_div(float(by_cl.head(5).sum()), total)
+    n_spike = 0
+    if prev_m and last_m:
+        pcl = pm.pivot_table(index="cluster", columns="Month", values="CostUSD",
+                             aggfunc="sum").fillna(0.0)
+        if prev_m in pcl.columns and last_m in pcl.columns:
+            growth = (pcl[last_m] - pcl[prev_m]) / pcl[prev_m].replace(0.0, float("nan"))
+            n_spike = int((growth > SPIKE_MOM).sum())
+    commit_total = float(commit["Est monthly saving (USD)"].sum()) if not commit.empty else 0.0
+    n_cand = int((commit["status"] == "RESERVE CANDIDATE").sum()) if not commit.empty else 0
+
+    mom_rag = "neutral"
+    if mom is not None:
+        mom_rag = "bad" if mom > 0.10 else "warn" if mom > 0 else "good"
+    return [
+        {"label": "Fleet amortized spend", "value": _fmt_money_compact(total),
+         "caption": "all pricing models, window total", "rag": "neutral"},
+        {"label": "Last full month", "value": _fmt_money_compact(last_full),
+         "caption": last_m or "n/a", "rag": "neutral"},
+        {"label": "Month-over-month", "value": _fmt_pct(mom),
+         "caption": "%s vs %s (full months)" % (last_m or "n/a", prev_m or "n/a"),
+         "rag": mom_rag},
+        {"label": "Annualized run-rate", "value": _fmt_money_compact(last_full * 12.0),
+         "caption": "last full month x12", "rag": "neutral"},
+        {"label": "Spot coverage", "value": _fmt_pct(spot_cov),
+         "caption": "spot / total amortized spend", "rag": "good" if (spot_cov or 0) > 0 else "warn"},
+        {"label": "RI/SP coverage", "value": _fmt_pct(risp_cov),
+         "caption": "reservation+savings plan / total",
+         "rag": "good" if (risp_cov or 0) >= 0.30 else "warn"},
+        {"label": "Commitment opportunity", "value": _fmt_money_compact(commit_total) + "/mo",
+         "caption": "steady OD at %d%% disc - %d candidates" % (round(discount * 100), n_cand),
+         "rag": "warn" if commit_total > 0 else "good"},
+        {"label": "Prod share", "value": _fmt_pct(prod_share),
+         "caption": "prod vs non-prod spend", "rag": "neutral"},
+        {"label": "Cost concentration", "value": _fmt_pct(top5),
+         "caption": "top-5 clusters of fleet spend",
+         "rag": "warn" if (top5 or 0) >= 0.60 else "neutral"},
+        {"label": "Cost spikes", "value": str(n_spike),
+         "caption": ">%d%% MoM growth clusters" % round(SPIKE_MOM * 100),
+         "rag": "warn" if n_spike else "good"},
+    ]
+
+
 def main(argv=None):
     p = base_parser("Fleet-wide AKS amortized cost trend")
     p.add_argument("--months", type=int, default=3, help="full months of history")
     p.add_argument("--granularity", default="Monthly", choices=["Monthly", "Daily"])
     p.add_argument("--actual", action="store_true",
                    help="also query billed (actual) cost for the RI/SP delta column")
+    p.add_argument("--commit-discount", type=float, default=COMMIT_DISCOUNT_DEFAULT,
+                   help="assumed reservation/savings-plan discount for the "
+                        "CommitmentOpportunity saving estimate (default %.2f)"
+                        % COMMIT_DISCOUNT_DEFAULT)
     args = p.parse_args(argv)
 
     subs = load_subscriptions(args.csv)
@@ -158,8 +326,7 @@ def main(argv=None):
                        for r in range(2, n + 2)]
     spot = pm[pm["PricingModel"].astype(str).str.lower() == "spot"] \
         .groupby("cluster")["CostUSD"].sum()
-    risp = pm[pm["PricingModel"].astype(str).str.lower().isin(
-        ["reservation", "reservations", "savingsplan", "savings plan"])] \
+    risp = pm[pm["PricingModel"].astype(str).str.lower().isin(RISP_PM)] \
         .groupby("cluster")["CostUSD"].sum()
     cm["Spot (USD)"] = cm["cluster"].map(spot).fillna(0.0)
     cm["RI+SP (USD)"] = cm["cluster"].map(risp).fillna(0.0)
@@ -258,6 +425,11 @@ def main(argv=None):
                         "PricingModel"])["CostUSD"].sum().reset_index() \
         .rename(columns={"CostUSD": "Amortized (USD)"})
 
+    # summary story layer: exec scorecard, commitment action, per-environment roll-up
+    env_sum = env_summary_rows(pm, months)
+    commit = commitment_rows(pm, months, risp, args.commit_discount)
+    cards = scorecard_cards(pm, months, commit, args.commit_discount)
+
     wb = excel.new_workbook()
     excel.add_readme(wb, "AKS Fleet Cost Report (amortized)", [
         "Generated: %s   Window: %s to %s   Scope: %s" %
@@ -269,9 +441,34 @@ def main(argv=None):
         "group (MC_*). 'Cluster fee' is the managed cluster resource itself (uptime SLA).",
         "The current month is partial (MTD). Currency: USD (CostUSD).",
         "Only clusters that exist today are included; deleted clusters' history is not.",
+        "Scorecard is the exec one-pager; CommitmentOpportunity ranks clusters whose",
+        "steady OnDemand spend is a reservation/savings-plan candidate (baseline = min",
+        "OnDemand over full months, saving = baseline x %d%% assumed discount - storage and"
+        % round(args.commit_discount * 100),
+        "non-VM meters are included, so verify VM SKU eligibility before purchasing).",
+        "SummaryByEnvironment rolls cost up per environment with a prod/non-prod tier.",
         "MeterChanges flags meters that appeared (NEW), disappeared (REMOVED) or moved",
         ">50% between the first and last month with >$5 spend - SKU change signals.",
     ])
+    excel.add_scorecard(wb, "Scorecard", cards, section="summary",
+                        title="AKS fleet cost - exec scorecard")
+    if not commit.empty:
+        excel.add_table(wb, "CommitmentOpportunity", commit, section="summary",
+                        money_cols=("OD avg/mo (USD)", "Steady OD baseline (USD)",
+                                    "RI+SP (USD)", "OD window (USD)",
+                                    "Est monthly saving (USD)", "Est annual saving (USD)"),
+                        pct_cols=("Commitment coverage",), fail_cols=("status",),
+                        fail_values=(), warn_values=("RESERVE CANDIDATE",))
+    if not env_sum.empty:
+        ws_env = excel.add_table(wb, "SummaryByEnvironment", env_sum, section="summary",
+                                 money_cols=tuple(months) + ("Window total (USD)",),
+                                 pct_cols=("Share %", "MoM %"), colorscale_cols=("MoM %",))
+        env_total_col = list(env_sum.columns).index("Window total (USD)") + 1
+        excel.add_bar_chart(ws_env, "Window amortized cost by environment",
+                            len(env_sum) + 1, env_total_col, "B%d" % (len(env_sum) + 5),
+                            y_title="USD")
+        excel.add_total_row(ws_env, env_sum, list(months) + ["Window total (USD)"],
+                            label_col="environment")
     excel.add_table(wb, "ClusterCosts", cm,
                     money_cols=tuple(months) + ("Window total (USD)", "Spot (USD)",
                                                 "RI+SP (USD)", "Cluster fee (USD)",

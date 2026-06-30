@@ -36,12 +36,21 @@ azrep/               shared library
                      name inference), scope picker/prompts, base_parser() common CLI,
                      out_path(), is_prod(), cluster filter globals
   costmgmt.py        CostClient: QPU-paced Cost Management query() -> DataFrame
-                     (Cost, CostUSD, Period + groupings); default_window(), dim_in(), f_and()
-  armextras.py       cluster_metrics() (Monitor platform metrics), activity_events(),
-                     aks_supported_versions(), node_image_date(), retail_vm_prices()
+                     (Cost, CostUSD, Period + groupings; with_quantity= adds a
+                     UsageQuantity column = billed node-hours for VM/VMSS meters);
+                     default_window(), dim_in(), f_and()
+  armextras.py       cluster_metrics() (Monitor platform metrics), activity_events()
+                     (ContainerService control-plane), vmss_churn_events() (node-RG
+                     Microsoft.Compute VMSS delete/deallocate eviction proxy),
+                     aks_supported_versions(), node_image_date(), retail_vm_prices(),
+                     _SKU_CAP static capability map + sku_capabilities() /
+                     ephemeral_os_disk_eligible() / modernize_sku() (same-vCPU/mem
+                     newer-gen SKU finder; used by cost_efficiency)
   excel.py           new_workbook(), add_readme(), add_table() (sections: intro/summary/
                      detail/reference; fail/warn conditional formatting; money/pct/int),
-                     add_total_row(), add_line_chart(), add_bar_chart(), save()
+                     add_scorecard() (merged-cell KPI cards w/ RAG fill, for exec
+                     one-pagers), add_total_row(), add_line_chart(), add_bar_chart(),
+                     add_grouped_bar_chart() (clustered multi-series, e.g. before/after), save()
   doc_export.py      markdown -> docx/pdf (`convert` command)
   drawio.py          .drawio diagram writer (used by architecture_design)
   sandbox.py         sandbox CLI front door: load_config(path, validate=) /
@@ -79,13 +88,13 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 |---|---|---|
 | 360 | cluster_360.py | ARG + AKS versions API + Cost Mgmt + Monitor; categorized estate view |
 | inventory | fleet_inventory.py | ARG only |
-| cost | fleet_cost.py | Cost Mgmt (sub-scope by node RG) + ARG |
+| cost | fleet_cost.py | Cost Mgmt (sub-scope by node RG) + ARG; layered: Scorecard/CommitmentOpportunity/SummaryByEnvironment story tabs, then per-cluster detail |
 | deepdive | cluster_deepdive.py | Cost Mgmt + ARG + Monitor + Activity Log (one cluster) |
 | design | architecture_design.py | ARG; also writes .md (Mermaid) + .drawio + .html (self-contained, no JS) companions |
 | version | version_eol.py | ARG + aks_supported_versions per region |
 | spot | spot_cluster_report.py | Cost Mgmt + ARG + retail prices |
 | spot-design | spot_split_design.py | ARG + retail prices |
-| spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices |
+| spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices + Activity Log (node-RG eviction proxy) |
 | utilization | utilization_idle.py | ARG + Monitor (1 paced call/cluster) |
 | governance | governance.py | ARG only; CHECKS list of (id, desc, fn(c, pools)->(status, detail)) |
 | conformance | conformance.py | ARG only; rules built from a golden YAML (sandbox config schema, subset) via build_rules(); requires --golden |
@@ -93,7 +102,8 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | policy-components | policy_components.py | Policy assignments + policySetDefinition + PolicyInsights componentPolicyStates (+ policyStates fallback) + ARG; drills ONE initiative -> groups -> policies -> non-compliant components |
 | network | network_ip_capacity.py | ARG only |
 | tags | tag_chargeback.py | ARG only |
-| optimization | optimization_report.py | Cost Mgmt + ARG + Monitor |
+| optimization | optimization_report.py | Cost Mgmt + ARG + Monitor; candidate queue incl. CONTROL_PLANE_TIER (TIER_HOURLY rate) + OFFHOURS_STOP_CANDIDATE (--offhours-pct 0.65, --no-tier-candidates gates the tier type) |
+| efficiency | cost_efficiency.py | ARG + Retail Prices only; config-driven levers beyond spot: control-plane tier, ephemeral OS disk, SKU modernization, autoscaler/floor hygiene, pool fragmentation; layered (Scorecard -> per-lever summary tabs -> Recommendations -> NodePools ref) |
 | rearch | subscription_rearch.py | ARG (all resources + advisorresources) + Cost Mgmt (per-ResourceId+ServiceName) + Advisor; ONE sub only; FINDINGS engine + .md narrative (Mermaid) |
 | container-eol | container_os_eol.py | endoflife.date (no Azure) |
 | aks-lifecycle | aks_lifecycle.py | MS Learn pages + GitHub releases (no Azure) |
@@ -143,17 +153,159 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 - `excel.add_table` truncates sheet names to 31 chars; `fail_values`/`warn_values`
   match exact cell strings.
 - Cost rows can be `(unmatched)` cluster when an RG isn't a known node RG.
+- `fleet_cost` is LAYERED (summary story tabs first, then per-cluster detail, then
+  raw). Summary tabs in creation/display order: `Scorecard` (built with
+  `excel.add_scorecard` KPI cards, NOT a table - exec one-pager),
+  `CommitmentOpportunity`, `SummaryByEnvironment`, `SummaryBySubscription`; detail is
+  `ClusterCosts`/`PricingModelSplit`/`TopMovers`/`MeterChanges`; reference is
+  `RawMonthly`(+`RawDaily`). `excel.save()` sorts by section and the sort is STABLE,
+  so the summary-tab display order is just their CREATE order - the three new tabs are
+  created right after `add_readme`, before the detail tables. `env_summary_rows`/
+  `commitment_rows`/`scorecard_cards` are the builders; `scorecard_cards` takes the
+  already-built `commit` frame so the headline KPI and the action tab agree.
+  `CommitmentOpportunity` flags steady OnDemand spend as a reservation/savings-plan
+  candidate: baseline = MIN OnDemand over FULL months (current MTD excluded),
+  `Est monthly saving = baseline * --commit-discount` (default 0.30), status
+  RESERVE CANDIDATE / COVERED (>= `COMMIT_COVERED` 0.70 existing RI+SP coverage),
+  rows with baseline < `COMMIT_MIN_USD` (50) dropped. The pricing-model Cost query
+  has NO meter axis, so storage/non-VM OnDemand spend is included in the baseline -
+  it surfaces candidates, VM SKU eligibility must be verified (said so in the ReadMe).
+  `is_prod` (azrep.subs) drives the `SummaryByEnvironment` prod/non-prod tier, the
+  Scorecard prod-share KPI, and is the SAME env resolution every report uses (never
+  from the subscription name). Smoke `chk_cost_story` asserts the hero cards, the
+  env tiers, and a RESERVE CANDIDATE row; `chk_sections` now expects `Scorecard` as
+  the first summary tab.
 - Spot priority is IMMUTABLE on an existing agent pool — spot conversion always
   means create a new spot pool + shrink the OD pool (spot-sim does this). AKS
   auto-adds the `scalesetpriority=spot:NoSchedule` taint; don't send it in PUTs.
+- `optimization` candidate loop now includes two config-driven types:
+  `CONTROL_PLANE_TIER` (non-prod on Standard/Premium downgrades to Free; prod on
+  Free surfaces a no-SLA risk note with NO saving; saving = TIER_HOURLY rate *
+  HOURS_PER_MONTH) and `OFFHOURS_STOP_CANDIDATE` (non-prod + running + cost >=
+  min; saving = avg_full * `--offhours-pct` default 0.65). Stop != free. Priced
+  from config + a static TIER_HOURLY map = {Free:0, Standard:0.012, Premium:0.60}
+  (verify real pricing); `--no-tier-candidates` gates the tier type. `CLUSTER_360`
+  does NOT reuse these (it stays on its own category set). `CLUSTER_360` DOES reuse
+  `governance.CHECKS`/`utilization_idle.classify`/etc as before.
+- `efficiency` (cost_efficiency) is the ARG-cheap layered report for config-driven
+  levers: `ControlPlaneTier`/`EphemeralOSDisk`/`SKUModernization`/`AutoscalerHygiene`/
+  `PoolFragmentation` summary tabs (built in that CREATE order - `excel.save` sort is
+  STABLE so that's the display order), then `Recommendations` detail, then `NodePools`
+  reference. The tier lever mirrors the optimization TIER_HOURLY + 730. The ephemeral
+  lever and SKU modernization share the `_SKU_CAP` map (`armextras.sku_capabilities`):
+  keys are LOWERCASE keeping underscores e.g. `standard_d4s_v3` (Azure SKU naming is
+  case-insensitive but the armSkuName Retail Prices form keeps underscores, first
+  letter capitalised - `azure_sku()` is the reverse). `ephemeral_os_disk_eligible`
+  needs `max(cache_gb,temp_gb) >= os_disk_gb` (default 128); v5 SKUs have temp_gb=0
+  (ephemeral uses cache only) so cache_gb is the gate. `modernize_sku` finds the
+  cheapest same-vCPU/mem/SAME-ARCH newer-gen SKU strictly cheaper than current -
+  ARM64 (Dps_v5) is matched but surfaced as a separate "needs multi-arch images"
+  caveat (same convention as spot reports, never auto-recommended). ALL these are
+  best-effort public specs that DRIFT; every recommendation carries a
+  `verify_before_move` caveat (the report is screening, NOT an action plan).
+  Keyed by `cluster_id` (pool `cluster_id` == `c["id"]`) and `is_prod`. The smoke
+  `fake_retail_get` is SKU-aware (D4s_v3 + a cheaper D4s_v5) so `SKUModernization`
+  and `EphemeralOSDisk` are non-empty; `chk_eff` asserts DOWNGRADE TO FREE + a
+  non-empty EphemeralOSDisk.
 - `spot-savings` infers spot adoption from the first daily Cost Management row
-  with Spot spend above a threshold. ARG has only current node-pool state, so
-  this is cost-observed adoption, not an ARM creation timestamp. The headline
-  savings verdict is a retail-rate counterfactual for actual Spot VMSS spend;
-  whole-cluster before/after total cost is contextual and workload-confounded.
-  Its first summary tabs are `BeforeSpot`, `AfterSpot`, `SavingsProjection`
-  and `ActualVsProjection`; current node counts are current ARG facts only,
-  while `avg_node_equiv_at_retail` is an explicitly labeled cost/rate estimate.
+  with Spot spend above a threshold (`first_spot_dates`). ARG has only current
+  node-pool state, so this is cost-observed adoption, not an ARM creation
+  timestamp. **The headline saving is priced from ACTUAL amortized billing, not
+  retail list price** (`build_spot_estimates_actual`, the only estimator now - the
+  old retail-only `build_spot_estimates` was removed). For each spot VMSS day we
+  read billed node-hours from Cost Management `UsageQuantity` (CostClient.query
+  gained a `with_quantity` flag adding a usageQuantity Sum aggregation; the
+  spot_savings res query passes it) and re-price those hours at the cluster's own
+  effective OD/RI $/node-hour = sum(CostUSD)/sum(UsageQuantity) (`_effective_rate_table`).
+  The rate is chosen by a ladder (`_pick_od_hr`, recorded in `od_hr_source`):
+  pre_spot_history (per VM size, then cluster blend, from the baseline window
+  BEFORE that cluster's first spot day) -> concurrent_od_pool (the OD/RI pool it
+  still runs in the trend window) -> retail_fallback (public price) -> price_missing.
+  Amortized cost spreads RI/SP, so these rates carry those discounts; the saving
+  thus varies cluster to cluster. `annotate_daily_and_summary` rolls od_hr_source
+  up to a per-cluster `rate_basis` (dominant source by counterfactual $, via
+  `rate_basis_label`/`_is_actual_basis`), surfaced in `RealizedSavings`/
+  `SpotSavingsSummary` and the Scorecard "Actual-rate basis" card. If billing
+  returns no node-hours, hours fall back to retail-derived (actual/retail spot_hr).
+  Whole-cluster before/after total cost stays contextual and workload-confounded.
+  **The full fleet in scope is kept by default** (no spot-pool filter). Pass
+  `--only-spot-clusters` (keyed on pool `priority == "spot"` over `cluster_id`,
+  same opt-in as `spot_cluster_report --only-spot-clusters`) to restrict to
+  clusters with a current spot node pool; `--include-all-clusters` is a
+  deprecated no-op kept for backward compatibility. `--nonprod-spot` is a
+  management shortcut == `--nonprod --only-spot-clusters` (it sets
+  `args.nonprod=True` BEFORE `pick_scope` so it also suppresses the interactive
+  prompt, then forces the spot-only filter) for the "non-prod clusters that run
+  spot" BU story. **Why default = full
+  fleet:** a cluster whose spot pool was removed/decommissioned still shows
+  Cost Mgmt spot spend in its history and the report's verdict is cost-observed,
+  so filtering on current ARG spot-pool state drops real savings evidence.
+  Environment is per cluster via `azrep.subs.resolve_env_detail` (cluster tags
+  -> RG tags -> name inference using `ENV_CODE_MAP`: -d-/-s-/-r-/-p-/-u- ->
+  dev/sit/dr/prod/uat), the SAME resolution every report uses; never from the
+  subscription name. The report is LAYERED (green `section="summary"` story tabs
+  first, then a detail/reference evidence appendix). Story tabs in order:
+  `Scorecard` (built with `excel.add_scorecard` KPI cards, NOT a table) separates
+  the hard billed fact (invoiced Spot spend, from `last_N_actual_spot_cost`) from
+  the avoided-cost estimate (priced at each cluster's actual OD/RI rate), an
+  "Actual-rate basis" card (priced clusters on real billing vs retail fallback),
+  spot coverage %, realized-vs-achievable spot discount (achievable = hours-weighted
+  `(od_hr-spot_hr)/od_hr` over priced estimate rows), untapped runway, prod-on-spot
+  risk count, and the 3-state adoption read (Verified savers / Pricing gap / Not adopted);
+  `BeforeAfterByEnv` (`before_after_rows`: the management/BU slide - one row per
+  environment over the trend window, run-rated to a month: `monthly_actual_cost_usd`
+  (after, actual) vs `monthly_on_demand_cost_usd` (before = after + the priced
+  counterfactual `estimated_spot_saving`, so before>=after always and a no-retail
+  run shows before==after / status "Pricing gap"), plus `monthly_saving_usd`,
+  `saving_pct`, `annualized_saving_usd` and a status badge; a grouped before/after
+  bar chart via `excel.add_grouped_bar_chart` over the env rows and an
+  `add_total_row` fleet total. Saving is based on `estimated_spot_saving` (NOT
+  `od_cf - actual_spot`) so unpriced spot can't fake a negative saving);
+  `Recommendations` (`recommendation_rows`: one ranked row per eligible regular
+  Linux User OD pool via `_projectable_pools`, `est_monthly_saving_usd =
+  nodes*(od_hr-spot_hr)*24*30.4375`, with `cluster_risk_band` + a loud
+  `verify_before_move` caveat - it is EMPTY without retail prices, so it is NOT in
+  the smoke non-empty sheet list); `CoverageRisk` (`coverage_risk_rows`: per-
+  cluster `spot_share_compute`, spot/total nodes, pool/family/zone diversity,
+  price-cap, plus `vmss_churn_approx` and an additive `_risk_band` HIGH/MED/LOW -
+  reuses the spot-risk spirit of `spot_cluster_report.assess_clusters`);
+  `RealizedSavings` (`realized_savings_rows`: slim fact-vs-model per cluster with
+  a `verdict_label` badge) and `MonthlySavings` (`monthly_savings_rows`: last 3
+  calendar months - a fleet-total set of rows then per-cluster - with spot fact /
+  od counterfactual / saving / `savings_rate_pct` per month; `month_status` marks the
+  current month "MTD (partial)"; `savings_from_spot_pool` is a Yes/No flag, "Yes"
+  only when that month carried actual Spot VMSS spend > `SPOT_THRESHOLD_USD`, else
+  "No (no spot spend)" - it tracks spot attribution, NOT whether a saving could be
+  priced, so the no-retail-prices path still shows "Yes" with a zero saving). To keep
+  the 3-month roll-up populated, `analysis_window` floors the default daily-cost
+  lookback at `MONTHLY_LOOKBACK_DAYS` (92); an explicit `--lookback-days` still wins.
+  Then `SpotTimeline` (per-day Actual total / OD
+  counterfactual / Cumulative realized saving + modeled-future column; two line
+  charts), `TopSavers` (ranked standings: projected/annualized monthly saving,
+  `savings_rate_pct`, status badge; bar chart) and `SavingsByEnv` (prod vs non-
+  prod tier roll-up via `azrep.subs.is_prod()`; bar chart) also stay in summary.
+  The detail appendix is `SavingsProjection`, `BeforeSpot`, `AfterSpot`,
+  `ActualVsProjection`, `SpotSavingsSummary` (full per-cluster detail; keeps the
+  raw `verdict` + `last_N_*` columns engineers and tests rely on), `FleetDailyTrend`,
+  `SpotSavingsDaily/ByPool`; reference is `PriceReference`/`RawDailyCost`.
+  `TopSavers`/`SavingsByEnv`/`SavingsProjection` carry annualized +
+  `savings_rate_pct` (fractional, Excel % format). `VERDICT_LABEL` maps raw codes
+  to badges: SAVING->"Verified saving", FLAT->"Inconclusive", COST_UP->"Needs
+  review", PRICE_MISSING->"Pricing gap", NO_SPOT_COST->"Not adopted".
+  `classify_verdict` is unchanged, but COST_UP/FLAT effectively never fire for the
+  counterfactual (saving = `hours*(od_hr-spot_hr) >= 0`), so the Scorecard presents
+  the honest 3-state read instead of the old 5-badge tally. The old
+  `SpotSavingsHeadline` table (`headline_rows`) and `_leaderboard_chart` were removed.
+- `spot-savings` eviction proxy: `CoverageRisk.vmss_churn_approx` comes from
+  `armextras.vmss_churn_events(session, sub, node_resource_group, days)` - a NEW
+  helper that reads the node RG's Activity Log for Microsoft.Compute VMSS
+  delete/deallocate ops (UNLIKE `activity_events`, which keeps only
+  Microsoft.ContainerService control-plane writes). True spot evictions are only
+  visible on-node (Scheduled Events/IMDS), unreachable at Reader scope, so this
+  proxy mixes evictions with autoscale-down - label it as such, never a clean
+  eviction count. It runs once per spot cluster (node RG) unless `--no-eviction-scan`.
+  The smoke `ACTIVITY` fixture carries one Microsoft.Compute VMSS delete event so
+  the column is exercised; `cluster_deepdive`'s `activity_events` ignores it.
 - Control-plane-only AKS upgrade = PUT the managed cluster WITHOUT
   `properties.agentPoolProfiles`; pools upgrade individually via agentPool
   `orchestratorVersion`. One minor hop at a time.
@@ -173,6 +325,26 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   but `references` is a LIST of {url, source, tags} — the 1.x
   `references.referenceData` shape is gone. The online path is mocked in
   tests/test_vulnerability_report.py (`_fake_requests_get`) with real 2.0 shapes.
+- `vulnerabilities` classifier (`classify`) is deterministic and
+  PRECEDENCE-ORDERED, first match wins, each branch returning a 4-tuple
+  `(layer, confidence, evidence, signal)`: json_rule -> runtime_name (runtime/
+  framework by package NAME, matched on pkg+purl+CPE-product only, NEVER the NVD
+  description) -> pkgtype_os -> pkgtype_app -> cpe_o/cpe_a -> app_path/distro_path
+  -> none. Order is load-bearing: a runtime shipped as an OS package (a JRE via
+  apt) must read as `platform`, so runtime_name is checked BEFORE pkgtype_os.
+  Two real-Prisma bugs are fixed here and MUST stay fixed: (1) platform matching
+  no longer sees the free-text CVE description (a writeup mentioning "python"
+  used to mislabel OS packages), (2) a populated `distro`/OS column is NOT a
+  standalone base signal — Prisma carries it on every row, so app findings were
+  dragged to base_image; base now needs an OS-shaped path (`/usr/lib` etc.) or
+  PURL (`pkg:deb/rpm/apk`). The `signal` token + a `needs_review` flag
+  (unknown or confidence<0.6) are columns on the `Classification` tab. Charts:
+  `ByLayer` has a findings-by-layer bar chart; new `BySeverity` summary tab is a
+  severity×layer pivot (`norm_severity` bands Critical/High/Medium/Low/Unknown)
+  with a clustered bar via `excel.add_grouped_bar_chart`. Smoke list + the unit
+  test assert layers, the `signal` per row, the distro-bug case
+  (Maven+distro+OS-path -> application), and a no-rules run proving
+  openjdk -> platform via runtime_name without any JSON rule.
 - `rearch` (subscription_rearch) uses the `advisorresources` ARG table (Cost
   category recs carry `properties.extendedProperties.annualSavingsAmount` as a
   STRING - parse defensively, /12 for monthly). It is single-sub: >1 sub in

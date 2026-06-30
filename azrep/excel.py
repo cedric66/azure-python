@@ -193,6 +193,72 @@ def add_bar_chart(ws, title, nrows, data_col, anchor, y_title="USD", cat_col=1):
     return ch
 
 
+def add_grouped_bar_chart(ws, title, nrows, first_data_col, last_data_col, anchor,
+                          y_title="USD", cat_col=1):
+    """Clustered (side-by-side) column chart over a contiguous range of data
+    columns - one series per column, grouped per category. Mirrors
+    add_line_chart's data-range signature; use for before/after comparisons."""
+    ch = BarChart()
+    ch.type = "col"
+    ch.grouping = "clustered"
+    ch.title = title
+    ch.height, ch.width = 9, 24
+    ch.y_axis.title = y_title
+    data = Reference(ws, min_col=first_data_col, max_col=last_data_col,
+                     min_row=1, max_row=nrows)
+    cats = Reference(ws, min_col=cat_col, min_row=2, max_row=nrows)
+    ch.add_data(data, titles_from_data=True)
+    ch.set_categories(cats)
+    ws.add_chart(ch, anchor)
+    return ch
+
+
+SCORECARD_FILL = {"good": "C6EFCE", "warn": "FFEB9C", "bad": "FFC7CE",
+                  "neutral": "DDEBF7"}
+
+
+def add_scorecard(wb, name, cards, section="summary", per_row=3, title=None):
+    """Render KPI cards (label / big value / caption) as merged blocks for an
+    exec-readable one-pager, grid-wrapped `per_row` across. `cards` is a list of
+    dicts with keys label, value, caption, rag (rag in good/warn/bad/neutral ->
+    soft fill, black text). Returns the worksheet; cards span 4 cols x 4 rows each
+    with a 1-cell gutter. Used instead of a tall data table when the audience is
+    non-technical (see spot_savings Scorecard)."""
+    ws = wb.create_sheet(str(name)[:31])
+    _set_section(wb, ws, section)
+    start_row, start_col, cw, ch, gap = 2, 2, 4, 4, 1
+    if title:
+        ws.cell(row=1, column=start_col, value=title).font = Font(
+            name=FONT, size=12, bold=True)
+    label_font = Font(name=FONT, size=9, bold=True, color="404040")
+    value_font = Font(name=FONT, size=20, bold=True, color="000000")
+    cap_font = Font(name=FONT, size=8, color="595959")
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    last_row = start_row
+    for i, card in enumerate(cards):
+        r0 = start_row + (i // per_row) * (ch + gap)
+        c0 = start_col + (i % per_row) * (cw + gap)
+        fill = PatternFill("solid", start_color=SCORECARD_FILL.get(
+            str(card.get("rag", "neutral")), SCORECARD_FILL["neutral"]))
+        for rr in range(r0, r0 + ch):
+            for cc in range(c0, c0 + cw):
+                ws.cell(row=rr, column=cc).fill = fill
+        ws.merge_cells(start_row=r0, start_column=c0, end_row=r0, end_column=c0 + cw - 1)
+        lc = ws.cell(row=r0, column=c0, value=card.get("label", ""))
+        lc.font, lc.alignment = label_font, center
+        ws.merge_cells(start_row=r0 + 1, start_column=c0, end_row=r0 + 2, end_column=c0 + cw - 1)
+        vc = ws.cell(row=r0 + 1, column=c0, value=card.get("value", ""))
+        vc.font, vc.alignment = value_font, center
+        ws.merge_cells(start_row=r0 + 3, start_column=c0, end_row=r0 + 3, end_column=c0 + cw - 1)
+        pc = ws.cell(row=r0 + 3, column=c0, value=card.get("caption", ""))
+        pc.font, pc.alignment = cap_font, center
+        last_row = max(last_row, r0 + ch)
+    for cidx in range(start_col, start_col + per_row * (cw + gap)):
+        ws.column_dimensions[get_column_letter(cidx)].width = 13
+    ws._azrep_scorecard_next_row = last_row + 1
+    return ws
+
+
 def _finalize_sections(wb):
     sections = getattr(wb, "_azrep_sections", None)
     if not sections:

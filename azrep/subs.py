@@ -237,14 +237,20 @@ def pick_scope(subs, args):
         sel = subs
 
     print("\nScope step 2/3 - environment")
-    print("Press Enter for all environments. Use 'nonprod' for anything not in --prod-values.")
     print("Environments are resolved per cluster from AKS tags, resource-group tags, "
           "or cluster/resource-group names.")
     print("Name inference is %s; short-code map: %s" %
           ("on" if ENV_NAME_INFERENCE else "off",
            ", ".join("%s=%s" % (k, v) for k, v in sorted(ENV_CODE_MAP.items()))))
-    e = norm_env(input("Environment [all]: "))
-    if e == "nonprod":
+    print("--prod-values: %s" % ", ".join(sorted(PROD_VALUES)))
+    print("  1) all environments")
+    print("  2) nonprod  (everything NOT in --prod-values, grouped for one report)")
+    print("  3) <type a specific environment, e.g. dev / sit / uat / dr>")
+    raw = input("Environment [1=all]: ").strip()
+    e = norm_env(raw)
+    if raw == "" or e in ("1", "all"):
+        return sel, None
+    if e in ("2", "nonprod"):
         return sel, "nonprod"
     if e:
         return sel, e

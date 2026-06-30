@@ -219,3 +219,7 @@ __marimo__/
 
 # Sandbox cluster kubeconfigs (written next to the sandbox config)
 .kubeconfig-*
+
+.agents/skills/*
+.claude/skills/*
+.codex/skills/*

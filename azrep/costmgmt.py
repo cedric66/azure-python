@@ -58,14 +58,19 @@ class CostClient:
         self._last = time.time()
 
     def query(self, scope, metric="AmortizedCost", granularity="Monthly",
-              group_by=(), filt=None, date_from=None, date_to=None, _with_usd=True):
-        """Returns a DataFrame with Cost, CostUSD, Period and one column per grouping."""
+              group_by=(), filt=None, date_from=None, date_to=None, _with_usd=True,
+              with_quantity=False):
+        """Returns a DataFrame with Cost, CostUSD, Period and one column per grouping.
+        with_quantity adds a UsageQuantity column (billed usage units, e.g. node-hours
+        for VM/VMSS compute meters) so callers can derive an actual effective rate."""
         self._pace()
         self.calls += 1
         ds = {"granularity": granularity,
               "aggregation": {"totalCost": {"name": "Cost", "function": "Sum"}}}
         if _with_usd:
             ds["aggregation"]["totalCostUSD"] = {"name": "CostUSD", "function": "Sum"}
+        if with_quantity:
+            ds["aggregation"]["usageQuantity"] = {"name": "UsageQuantity", "function": "Sum"}
         if group_by:
             ds["grouping"] = [{"type": "Dimension", "name": g} for g in group_by]
         if filt:
@@ -82,7 +87,8 @@ class CostClient:
         except AzureApiError as e:
             if _with_usd and e.status == 400 and "costusd" in e.body.lower():
                 return self.query(scope, metric, granularity, group_by, filt,
-                                  date_from, date_to, _with_usd=False)
+                                  date_from, date_to, _with_usd=False,
+                                  with_quantity=with_quantity)
             raise
         frames = []
         while True:
@@ -98,7 +104,9 @@ class CostClient:
             data = self.s.post(nxt, payload=payload)
         df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
         if df.empty:
-            return pd.DataFrame(columns=list(group_by) + ["Cost", "CostUSD", "Period", "Currency"])
+            extra = ["UsageQuantity"] if with_quantity else []
+            return pd.DataFrame(columns=list(group_by) + ["Cost", "CostUSD",
+                                                          "Period", "Currency"] + extra)
         if "UsageDate" in df.columns:
             df["Period"] = pd.to_datetime(df["UsageDate"].astype(int).astype(str),
                                           format="%Y%m%d").dt.strftime("%Y-%m-%d")
