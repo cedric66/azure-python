@@ -33,8 +33,9 @@ from azrep.costmgmt import CostClient, dim_in
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
 from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_scope
-from spot_cluster_report import (PM_ORDER, chunks, pool_from_resource_id,
-                                 price_reference_rows, retail_price_lookup, vm_family)
+from spot_cluster_report import (NONSPOT_PRICING, PM_ORDER, _risk_band, chunks,
+                                 pool_from_resource_id, price_reference_rows,
+                                 retail_price_lookup, rg_from_resource_id, vm_family)
 
 RG_CHUNK = 30
 DAYS_PER_MONTH = 30.4375
@@ -68,16 +69,6 @@ def analysis_window(today, trend_days, baseline_days, trim_days, lookback_days):
     lookback = max(1, lookback)
     d_from = d_to - dt.timedelta(days=lookback - 1)
     return d_from, d_to
-
-
-def rg_from_resource_id(resource_id):
-    # Recover the resource group from an ARM id (.../resourceGroups/<rg>/...) so
-    # we don't need a 3rd grouping dimension on the Cost Management query.
-    parts = str(resource_id or "").split("/")
-    for i, p in enumerate(parts):
-        if p.lower() == "resourcegroups" and i + 1 < len(parts):
-            return parts[i + 1]
-    return ""
 
 
 def attach_resource_rows(frames, rg_map):
@@ -190,9 +181,6 @@ def build_daily_breakdown(res, fees, clusters, d_from, d_to):
                 if row["Compute total (USD)"] else 0.0
             rows.append(row)
     return pd.DataFrame(rows)
-
-
-NONSPOT_PRICING = ("ondemand", "reservation", "savingsplan")
 
 
 def first_spot_dates(daily, spot_threshold=SPOT_THRESHOLD_USD):
@@ -1139,40 +1127,6 @@ def _window_slice(daily, trend_days):
     d = daily.copy()
     d["_d"] = d["Date"].map(parse_date)
     return d[d["_d"] >= start]
-
-
-SPOT_SHARE_HIGH = 0.50
-SPOT_SHARE_MED = 0.25
-
-
-def _risk_band(is_prod_env, spot_share, single_pool, single_family, price_capped,
-               no_od_fallback):
-    """Transparent additive reliability score -> HIGH/MED/LOW band + reason string.
-    Caller passes '-' band itself for clusters with no spot exposure."""
-    score, reasons = 0, []
-    if is_prod_env:
-        score += 2
-        reasons.append("prod on spot")
-    if spot_share >= SPOT_SHARE_HIGH:
-        score += 2
-        reasons.append("spot >=50% of compute")
-    elif spot_share >= SPOT_SHARE_MED:
-        score += 1
-        reasons.append("spot >=25% of compute")
-    if single_pool:
-        score += 1
-        reasons.append("single spot pool (drains together)")
-    if single_family:
-        score += 1
-        reasons.append("single VM family")
-    if price_capped:
-        score += 1
-        reasons.append("price-capped spot")
-    if no_od_fallback:
-        score += 1
-        reasons.append("no on-demand fallback")
-    band = "HIGH" if score >= 4 else "MED" if score >= 2 else "LOW"
-    return band, "; ".join(reasons)
 
 
 def coverage_risk_rows(clusters, pools, daily, churn_by_cluster, trend_days):

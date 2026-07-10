@@ -133,8 +133,8 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   exceeding either 400s with "Invalid dataset aggregation, the maximum allowed
   number of items is 2" (the smoke mock now asserts both). A 3rd dimension you
   only slice on stays a `dim_in` filter (filters don't count) - `spot_savings`
-  groups `(ResourceId, PricingModel)` and recovers the node RG via
-  `rg_from_resource_id`. `with_quantity=True` therefore drops the separate
+  AND `spot_cluster_report`'s res query group `(ResourceId, PricingModel)` and
+  recover the node RG via `rg_from_resource_id`. `with_quantity=True` therefore drops the separate
   CostUSD aggregation (Cost + UsageQuantity = 2; CostUSD mirrored from Cost), so
   it cannot be combined with a 2-grouping query that also needs ResourceGroupName.
 - Metrics: `connect(min_interval=0.15)` and skip stopped clusters.
@@ -186,6 +186,30 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 - Spot priority is IMMUTABLE on an existing agent pool — spot conversion always
   means create a new spot pool + shrink the OD pool (spot-sim does this). AKS
   auto-adds the `scalesetpriority=spot:NoSchedule` taint; don't send it in PUTs.
+- `spot` (spot_cluster_report) is LAYERED like its siblings: summary tabs in
+  create order `Scorecard` (add_scorecard KPI cards) -> `Summary` (sorted by
+  Total desc, add_total_row + OD-vs-Spot grouped bar) -> `Candidates` (ranked,
+  savings bar chart) -> `FleetCostTrend` (per-month roll-up + line chart); the
+  config/cost tabs stay detail, PriceReference/RawResourceCost reference.
+  Candidates prices the OD side by ladder `pick_candidate_od_hr`: cluster's
+  actual billed rate for the same VM size (`effective_od_rates` =
+  sum(CostUSD)/sum(UsageQuantity) over non-spot VMSS lines) -> cluster blend ->
+  retail list, recorded in `od_hr_source` (actual_billed / actual_billed_blend /
+  retail_list / price_missing); spot side is always retail. The res cost query
+  groups `(ResourceId, PricingModel)` with `with_quantity=True` (node RG stays a
+  filter, recovered via `rg_from_resource_id` in `cost_attach`), which also puts
+  PricingModel+UsageQuantity on RawResourceCost. Formula columns still anchor at
+  G/J/K (nodes/od_hr/spot_hr) with the 3 new columns (od_hr_source,
+  cluster_risk_band, verify_before_move) inserted AFTER K, BEFORE the formulas -
+  and the frame is sorted by python-side saving BEFORE formulas are added.
+  `cluster_risk_bands` reuses `_risk_band`; assessment gained
+  `spot_eviction_policy` (Deallocate keeps OS disks billing). `pools_by_cluster`
+  is keyed by `cluster_id` now (name collisions across subs) - helpers
+  `autoscaler_rows`/`assess_clusters`/`cluster_summary_rows`/`nodepool_cost_rows`
+  all expect id keys. Shared spot helpers (`_risk_band`, `SPOT_SHARE_*`,
+  `NONSPOT_PRICING`, `rg_from_resource_id`) LIVE in spot_cluster_report;
+  spot_savings imports them (import direction is spot_savings ->
+  spot_cluster_report, never the reverse - circular otherwise).
 - `optimization` candidate loop now includes two config-driven types:
   `CONTROL_PLANE_TIER` (non-prod on Standard/Premium downgrades to Free; prod on
   Free surfaces a no-SLA risk note with NO saving; saving = TIER_HOURLY rate *

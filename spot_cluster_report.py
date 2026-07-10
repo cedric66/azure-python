@@ -5,9 +5,12 @@ what do they cost, and what risks are visible from subscription-level data?"
 and "which user node pools are candidates to move to spot, with an estimated
 saving from the public Azure Retail Prices API?" (formerly spot_opportunity.py).
 
-Tabs: ReadMe, Summary, SpotNodePools, OnDemandNodePools, NodePoolSkuSummary,
-AutoscalerConfig, SpotAssessment, Candidates, CostByCluster, CostTrend,
-CostByNodePool, OtherCostItems, CostByMeter, PriceReference, RawResourceCost.
+Layered: Scorecard (KPI cards), Summary, Candidates and FleetCostTrend are the
+green story tabs; detail is SpotNodePools, OnDemandNodePools, NodePoolSkuSummary,
+AutoscalerConfig, SpotAssessment, CostByCluster, CostTrend, CostByNodePool,
+OtherCostItems, CostByMeter; reference is PriceReference, RawResourceCost.
+Candidate savings price the OD side at each cluster's ACTUAL billed $/node-hour
+(amortized cost / billed node-hours) when history allows, retail as fallback.
 
 Usage:
   python spot_cluster_report.py --subs contoso-platform --env dev
@@ -30,6 +33,9 @@ from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_
 HOURS_PER_MONTH = 730
 RG_CHUNK = 30
 PM_ORDER = ["OnDemand", "Spot", "Reservation", "SavingsPlan"]
+NONSPOT_PRICING = ("ondemand", "reservation", "savingsplan")
+SPOT_SHARE_HIGH = 0.50
+SPOT_SHARE_MED = 0.25
 VMSS_RE = re.compile(r"/virtualmachinescalesets/aks-(.+?)-\d+-vmss$", re.I)
 
 
@@ -98,10 +104,52 @@ def vm_family(size):
     return m.group(1).lower()
 
 
+def rg_from_resource_id(resource_id):
+    # Recover the resource group from an ARM id (.../resourceGroups/<rg>/...) so
+    # we don't need a 3rd grouping dimension on the Cost Management query.
+    parts = str(resource_id or "").split("/")
+    for i, p in enumerate(parts):
+        if p.lower() == "resourcegroups" and i + 1 < len(parts):
+            return parts[i + 1]
+    return ""
+
+
+def _risk_band(is_prod_env, spot_share, single_pool, single_family, price_capped,
+               no_od_fallback):
+    """Transparent additive reliability score -> HIGH/MED/LOW band + reason string.
+    Caller passes '-' band itself for clusters with no spot exposure."""
+    score, reasons = 0, []
+    if is_prod_env:
+        score += 2
+        reasons.append("prod on spot")
+    if spot_share >= SPOT_SHARE_HIGH:
+        score += 2
+        reasons.append("spot >=50% of compute")
+    elif spot_share >= SPOT_SHARE_MED:
+        score += 1
+        reasons.append("spot >=25% of compute")
+    if single_pool:
+        score += 1
+        reasons.append("single spot pool (drains together)")
+    if single_family:
+        score += 1
+        reasons.append("single VM family")
+    if price_capped:
+        score += 1
+        reasons.append("price-capped spot")
+    if no_od_fallback:
+        score += 1
+        reasons.append("no on-demand fallback")
+    band = "HIGH" if score >= 4 else "MED" if score >= 2 else "LOW"
+    return band, "; ".join(reasons)
+
+
 def cost_attach(frames, rg_map):
     if not frames:
         return pd.DataFrame()
     df = pd.concat(frames, ignore_index=True)
+    if "ResourceGroupName" not in df.columns:
+        df["ResourceGroupName"] = df["ResourceId"].map(rg_from_resource_id)
     key = list(zip(df["subscription_id"], df["ResourceGroupName"].str.lower()))
     df["cluster_id"] = [rg_map.get(k, {}).get("id", "") for k in key]
     df["cluster"] = [rg_map.get(k, {}).get("cluster", "(unmatched)") for k in key]
@@ -135,8 +183,13 @@ def collect_cost(session, clusters, months):
             if not df.empty:
                 df["subscription_id"] = sid
                 pm_rows.append(df)
+            # Grouping AND aggregation are capped at 2 items each; the node RG
+            # stays a filter (recovered from ResourceId in cost_attach), freeing
+            # the 2nd grouping slot for PricingModel and the 2nd aggregation slot
+            # for UsageQuantity (billed node-hours -> actual effective rate).
             df = cost.query(scope, "AmortizedCost", "Monthly",
-                            ("ResourceGroupName", "ResourceId"), f, d_from, d_to)
+                            ("ResourceId", "PricingModel"), f, d_from, d_to,
+                            with_quantity=True)
             if not df.empty:
                 df["subscription_id"] = sid
                 res_rows.append(df)
@@ -293,7 +346,7 @@ def sku_summary(pools):
 def autoscaler_rows(clusters, pools_by_cluster):
     rows = []
     for c in clusters:
-        ps = pools_by_cluster.get(c["cluster"], [])
+        ps = pools_by_cluster.get(c["id"], [])
         rows.append({
             "cluster": c["cluster"],
             "subscription": c["subscription"],
@@ -333,7 +386,7 @@ def add_assessment(rows, c, severity, check, result, evidence, recommendation):
 def assess_clusters(clusters, pools_by_cluster):
     rows = []
     for c in clusters:
-        ps = pools_by_cluster.get(c["cluster"], [])
+        ps = pools_by_cluster.get(c["id"], [])
         spot = [p for p in ps if p["priority"].lower() == "spot"]
         ondemand = [p for p in ps if p["priority"].lower() != "spot"]
         system_ondemand = [p for p in ondemand if p["mode"].lower() == "system" and p["count"] > 0]
@@ -373,6 +426,13 @@ def assess_clusters(clusters, pools_by_cluster):
                            "spot_price_cap", "WARN" if capped else "PASS",
                            "%d capped spot pool(s)" % len(capped),
                            "Price caps can cause eviction when price rises; -1 pays up to on-demand.")
+            dealloc = [p for p in spot
+                       if str(p.get("eviction_policy") or "").lower() == "deallocate"]
+            add_assessment(rows, c, "WARN" if dealloc else "INFO",
+                           "spot_eviction_policy", "WARN" if dealloc else "PASS",
+                           "%d Deallocate spot pool(s)" % len(dealloc),
+                           "Deallocate keeps OS disks billing while nodes sit evicted; "
+                           "use Delete unless node-local state must survive eviction.")
             no_auto = [p for p in spot if not p["autoscaling"]]
             add_assessment(rows, c, "WARN" if no_auto else "INFO",
                            "spot_autoscaling", "WARN" if no_auto else "PASS",
@@ -406,18 +466,19 @@ def assess_clusters(clusters, pools_by_cluster):
 def nodepool_cost_rows(res, pools):
     if res.empty:
         return []
-    cfg = {(p["cluster"], p["pool"]): p for p in pools}
+    cfg = {(p["cluster_id"], p["pool"]): p for p in pools}
     r = res.copy()
     r["pool"] = r["ResourceId"].map(pool_from_resource_id)
     r = r[r["pool"] != ""]
     rows = []
-    for keys, grp in r.groupby(["cluster", "subscription", "environment", "pool"], dropna=False):
-        p = cfg.get((keys[0], keys[3]), {})
+    for keys, grp in r.groupby(["cluster_id", "cluster", "subscription", "environment",
+                                "pool"], dropna=False):
+        p = cfg.get((keys[0], keys[4]), {})
         rows.append({
-            "cluster": keys[0],
-            "subscription": keys[1],
-            "environment": keys[2],
-            "pool": keys[3],
+            "cluster": keys[1],
+            "subscription": keys[2],
+            "environment": keys[3],
+            "pool": keys[4],
             "priority": p.get("priority", ""),
             "mode": p.get("mode", ""),
             "vm_size": p.get("vm_size", ""),
@@ -478,7 +539,7 @@ def cluster_summary_rows(clusters, pools_by_cluster, split):
     split_by_cluster = split.set_index("cluster_id") if not split.empty else pd.DataFrame()
     rows = []
     for c in clusters:
-        ps = pools_by_cluster.get(c["cluster"], [])
+        ps = pools_by_cluster.get(c["id"], [])
         spot = [p for p in ps if p["priority"].lower() == "spot"]
         ondemand = [p for p in ps if p["priority"].lower() != "spot"]
         system_ondemand = [p for p in ondemand if p["mode"].lower() == "system"]
@@ -544,28 +605,165 @@ def retail_price_lookup(pools, currency):
     return prices
 
 
-def candidate_rows(candidates, prices):
+def effective_od_rates(res, pools):
+    """Actual effective $/node-hour per cluster from amortized VMSS billing:
+    {cluster_id: {"by_size": {vm_size: hr}, "blend": hr}} as
+    sum(CostUSD)/sum(billed node-hours) over non-spot lines. Carries the tenant's
+    EA/MCA and RI/SP discounts, unlike the public retail list price."""
+    out = {}
+    if res.empty or "UsageQuantity" not in res.columns:
+        return out
+    cfg = {(p["cluster_id"], p["pool"]): p for p in pools}
+    r = res[res["cluster_id"] != ""].copy()
+    r["pool"] = r["ResourceId"].map(pool_from_resource_id)
+    r = r[(r["pool"] != "")
+          & r["PricingModel"].astype(str).str.lower().isin(NONSPOT_PRICING)
+          & (r["UsageQuantity"].fillna(0.0) > 0)]
+    if r.empty:
+        return out
+    r["vm_size"] = [cfg.get((q.cluster_id, q.pool), {}).get("vm_size", "")
+                    for q in r.itertuples()]
+    by_size = defaultdict(dict)
+    g = r.groupby(["cluster_id", "vm_size"], dropna=False)[["CostUSD", "UsageQuantity"]].sum()
+    for (cid, size), row in g.iterrows():
+        if size and float(row["UsageQuantity"]) > 0:
+            by_size[cid][size] = float(row["CostUSD"]) / float(row["UsageQuantity"])
+    gb = r.groupby("cluster_id", dropna=False)[["CostUSD", "UsageQuantity"]].sum()
+    for cid, row in gb.iterrows():
+        h = float(row["UsageQuantity"])
+        out[cid] = {"by_size": dict(by_size.get(cid, {})),
+                    "blend": float(row["CostUSD"]) / h if h > 0 else None}
+    return out
+
+
+def cluster_risk_bands(clusters, pools_by_cluster, split):
+    """Current spot reliability band per cluster ('-' = no spot exposure today),
+    using the same additive scoring as spot_savings CoverageRisk."""
+    share = {}
+    if not split.empty:
+        share = dict(zip(split["cluster_id"], split["Spot %"]))
+    bands = {}
+    for c in clusters:
+        ps = pools_by_cluster.get(c["id"], [])
+        spot = [p for p in ps if p["priority"].lower() == "spot"]
+        sp_share = float(share.get(c["id"], 0.0) or 0.0)
+        if not spot and sp_share <= 0:
+            bands[c["id"]] = "-"
+            continue
+        od_user = [p for p in ps if p["priority"].lower() != "spot"
+                   and p["mode"].lower() == "user" and int(p["count"] or 0) > 0]
+        families = {vm_family(p["vm_size"]) for p in spot if p["vm_size"]}
+        capped = any(p.get("spot_max_price") not in (-1, "-1", None, "") for p in spot)
+        band, _reasons = _risk_band(is_prod(c["environment"]), sp_share,
+                                    single_pool=(len(spot) == 1),
+                                    single_family=(len(families) < 2),
+                                    price_capped=capped,
+                                    no_od_fallback=(not od_user))
+        bands[c["id"]] = band
+    return bands
+
+
+def pick_candidate_od_hr(pool, rates, retail):
+    """OD rate ladder for a candidate pool: the cluster's actual billed rate for
+    the same VM size, then the cluster blend, then retail list price."""
+    t = rates.get(pool["cluster_id"]) or {}
+    if pool["vm_size"] and t.get("by_size", {}).get(pool["vm_size"]):
+        return t["by_size"][pool["vm_size"]], "actual_billed"
+    if t.get("blend"):
+        return t["blend"], "actual_billed_blend"
+    if retail.get("od_hr"):
+        return float(retail["od_hr"]), "retail_list"
+    return None, "price_missing"
+
+
+def candidate_rows(candidates, prices, rates, risk_bands):
     rows = []
     for q in candidates:
-        pr = prices.get((q["location"], q["vm_size"])) or {}
+        retail = prices.get((q["location"], q["vm_size"])) or {}
+        od_hr, od_src = pick_candidate_od_hr(q, rates, retail)
+        spot_hr = retail.get("spot_hr")
+        est = (int(q["count"] or 0) * HOURS_PER_MONTH * (od_hr - spot_hr)
+               if od_hr and spot_hr else None)
         rows.append({
             "cluster": q["cluster"], "subscription": q["subscription"],
             "environment": q["environment"], "location": q["location"],
             "pool": q["pool"], "vm_size": q["vm_size"], "nodes": q["count"],
             "autoscaling": q["autoscaling"], "taints": q["taints"],
-            "od_hr": pr.get("od_hr"), "spot_hr": pr.get("spot_hr"),
+            "od_hr": od_hr, "spot_hr": spot_hr, "od_hr_source": od_src,
+            "cluster_risk_band": risk_bands.get(q["cluster_id"], "-"),
+            "verify_before_move": "replicas / PDB / stateful?",
+            "_est": est,
         })
     cand = pd.DataFrame(rows)
-    if not cand.empty:
-        n = len(cand)
-        # nodes=G, od_hr=J, spot_hr=K -> formulas keep the sheet dynamic
-        cand["Spot discount %"] = ["=IF(OR(J%d=\"\",K%d=\"\",J%d=0),\"\",1-K%d/J%d)"
-                                   % (r, r, r, r, r) for r in range(2, n + 2)]
-        cand["Est monthly OD cost"] = ["=IF(J%d=\"\",\"\",G%d*%d*J%d)"
-                                       % (r, r, HOURS_PER_MONTH, r) for r in range(2, n + 2)]
-        cand["Est monthly saving"] = ["=IF(OR(J%d=\"\",K%d=\"\"),\"\",G%d*%d*(J%d-K%d))"
-                                      % (r, r, r, HOURS_PER_MONTH, r, r) for r in range(2, n + 2)]
-    return cand
+    stats = {"pools": len(rows), "priced": 0, "actual": 0, "est_total": 0.0}
+    if cand.empty:
+        return cand, stats
+    stats["priced"] = int(cand["_est"].notna().sum())
+    stats["actual"] = int(cand["od_hr_source"].str.startswith("actual").sum())
+    stats["est_total"] = float(cand["_est"].fillna(0.0).sum())
+    # sort BEFORE adding formula columns - formulas anchor to row numbers
+    cand = cand.sort_values("_est", ascending=False, na_position="last") \
+        .drop(columns=["_est"]).reset_index(drop=True)
+    n = len(cand)
+    # nodes=G, od_hr=J, spot_hr=K -> formulas keep the sheet dynamic
+    cand["Spot discount %"] = ["=IF(OR(J%d=\"\",K%d=\"\",J%d=0),\"\",1-K%d/J%d)"
+                               % (r, r, r, r, r) for r in range(2, n + 2)]
+    cand["Est monthly OD cost"] = ["=IF(J%d=\"\",\"\",G%d*%d*J%d)"
+                                   % (r, r, HOURS_PER_MONTH, r) for r in range(2, n + 2)]
+    cand["Est monthly saving"] = ["=IF(OR(J%d=\"\",K%d=\"\"),\"\",G%d*%d*(J%d-K%d))"
+                                  % (r, r, r, HOURS_PER_MONTH, r, r) for r in range(2, n + 2)]
+    return cand, stats
+
+
+def fleet_trend_rows(trend):
+    cols = ["Month", "Total (USD)", "Spot", "OnDemand", "Reservation",
+            "SavingsPlan", "Cluster fee", "Spot %"]
+    if trend.empty:
+        return pd.DataFrame(columns=cols)
+    g = trend.groupby("Month")[PM_ORDER + ["Cluster fee", "Total (USD)"]].sum().reset_index()
+    g["Spot %"] = g.apply(
+        lambda r: r["Spot"] / r["Total (USD)"] if r["Total (USD)"] else 0.0, axis=1)
+    return g[cols]
+
+
+def _money0(v):
+    return "$" + format(float(v or 0.0), ",.0f")
+
+
+def scorecard_cards(split, clusters, pools_by_cluster, assessment, cand_stats, window):
+    """KPI cards for the exec one-pager: billed facts (amortized window cost)
+    beside the candidate screening estimate, which is priced at each cluster's
+    actual billed OD/RI rate where billing history allows."""
+    spot_usd = float(split["Spot"].sum()) if not split.empty else 0.0
+    total_usd = float(split["Total (USD)"].sum()) if not split.empty else 0.0
+    share = spot_usd / total_usd if total_usd else 0.0
+    with_spot = [c for c in clusters
+                 if any(p["priority"].lower() == "spot"
+                        for p in pools_by_cluster.get(c["id"], []))]
+    prod_spot = [c for c in with_spot if is_prod(c["environment"])]
+    high = int((assessment["severity"] == "HIGH").sum()) if not assessment.empty else 0
+    return [
+        {"label": "Spot spend (window)", "value": _money0(spot_usd),
+         "caption": "amortized billing, %s to %s" % window, "rag": "neutral"},
+        {"label": "Spot share of cost", "value": "%.1f%%" % (share * 100),
+         "caption": "of node RG + cluster fee cost",
+         "rag": "good" if share > 0 else "neutral"},
+        {"label": "Clusters running spot",
+         "value": "%d / %d" % (len(with_spot), len(clusters)),
+         "caption": "clusters with a current spot node pool", "rag": "neutral"},
+        {"label": "Candidate savings screen",
+         "value": _money0(cand_stats.get("est_total", 0.0)) + "/mo",
+         "caption": "%d/%d pools priced, %d at actual billed rate - verify before move"
+                    % (cand_stats.get("priced", 0), cand_stats.get("pools", 0),
+                       cand_stats.get("actual", 0)),
+         "rag": "good" if cand_stats.get("est_total") else "neutral"},
+        {"label": "Prod clusters on spot", "value": str(len(prod_spot)),
+         "caption": "spot eviction hits prod workloads" if prod_spot
+                    else "no prod spot exposure",
+         "rag": "bad" if prod_spot else "good"},
+        {"label": "HIGH assessment findings", "value": str(high),
+         "caption": "see SpotAssessment", "rag": "bad" if high else "good"},
+    ]
 
 
 def price_reference_rows(prices):
@@ -604,16 +802,20 @@ def main(argv=None):
         log("No clusters in scope.")
         return
 
+    # cluster names can collide across subscriptions - key pools by cluster id
     pools_by_cluster = defaultdict(list)
     for p0 in pools:
-        pools_by_cluster[p0["cluster"]].append(p0)
+        pools_by_cluster[p0["cluster_id"]].append(p0)
 
     log("Collecting spot configuration and amortized cost for %d cluster(s)..." % len(clusters))
     cost = collect_cost(session, clusters, args.months)
     split = pricing_split(cost["pm"], cost["fees"])
     trend = cost_trend(cost["pm"], cost["fees"])
+    fleet_trend = fleet_trend_rows(trend)
 
     summary = pd.DataFrame(cluster_summary_rows(clusters, pools_by_cluster, split))
+    if not summary.empty:
+        summary = summary.sort_values("Total (USD)", ascending=False).reset_index(drop=True)
     spot_pools = pd.DataFrame(build_pool_rows(pools, True))
     ondemand_pools = pd.DataFrame(build_pool_rows(pools, False))
     sku = pd.DataFrame(sku_summary(pools))
@@ -632,7 +834,9 @@ def main(argv=None):
         candidates = spot_candidates(pools)
         spot_now = [q for q in pools if q["priority"].lower() == "spot"]
         prices = retail_price_lookup(candidates + spot_now, args.currency)
-    cand = candidate_rows(candidates, prices)
+    rates = effective_od_rates(cost["res"], pools)
+    risk_bands = cluster_risk_bands(clusters, pools_by_cluster, split)
+    cand, cand_stats = candidate_rows(candidates, prices, rates, risk_bands)
     prdf = price_reference_rows(prices)
     raw_res = cost["res"].copy()
     if not raw_res.empty:
@@ -656,22 +860,57 @@ def main(argv=None):
         "and other non-VMSS charges are shown in OtherCostItems.",
         "",
         "Candidates lists user-mode, Linux, non-spot pools with running nodes that could",
-        "move to spot, with savings estimated from PUBLIC retail prices (prices.azure.com):",
-        "  - your EA/MCA negotiated rates and RI/savings-plan coverage are NOT reflected;",
-        "  - spot prices float with capacity; spot nodes can be evicted at any time.",
-        "Treat 'Est monthly saving' as an upper-bound screening number, then validate the",
-        "top candidates against the actual amortized cost in CostByCluster/CostByNodePool.",
+        "move to spot. The OD side is priced at the cluster's ACTUAL billed $/node-hour",
+        "(amortized cost / billed node-hours, so EA/MCA and RI/SP discounts ARE included)",
+        "when billing history allows; od_hr_source records the rate used (actual_billed /",
+        "actual_billed_blend / retail_list). The spot side is always the PUBLIC retail",
+        "spot price (prices.azure.com):",
+        "  - spot prices float with capacity; spot nodes can be evicted at any time;",
+        "  - cluster_risk_band is the cluster's CURRENT spot risk ('-' = no spot today).",
+        "Treat 'Est monthly saving' as a screening number and verify workload suitability",
+        "(replicas / PodDisruptionBudgets / statefulness) before moving anything.",
         "",
         "No kubectl access is used, so pod tolerations, priority expander ConfigMaps,",
         "PodDisruptionBudgets and application workload criticality are not visible.",
     ])
-    excel.add_table(wb, "Summary", summary, section="summary",
-                    money_cols=("OnDemand", "Spot", "Reservation", "SavingsPlan",
-                                "Cluster fee", "Total (USD)"),
-                    pct_cols=("Spot %",),
-                    int_cols=("spot_pools", "spot_nodes", "on_demand_pools",
-                              "on_demand_nodes", "total_nodes", "spot_max_nodes",
-                              "cluster_max_nodes", "autoscaling_pools"))
+    excel.add_scorecard(wb, "Scorecard", scorecard_cards(
+        split, clusters, pools_by_cluster, assessment, cand_stats,
+        (cost["from"], cost["to"])))
+    ws = excel.add_table(wb, "Summary", summary, section="summary",
+                         money_cols=("OnDemand", "Spot", "Reservation", "SavingsPlan",
+                                     "Cluster fee", "Total (USD)"),
+                         pct_cols=("Spot %",),
+                         int_cols=("spot_pools", "spot_nodes", "on_demand_pools",
+                                   "on_demand_nodes", "total_nodes", "spot_max_nodes",
+                                   "cluster_max_nodes", "autoscaling_pools"))
+    if not summary.empty:
+        excel.add_total_row(ws, summary, ("OnDemand", "Spot", "Reservation",
+                                          "SavingsPlan", "Cluster fee", "Total (USD)"))
+        cols = list(summary.columns)
+        excel.add_grouped_bar_chart(
+            ws, "OnDemand vs Spot cost by cluster (top %d)" % min(len(summary), 15),
+            min(len(summary), 15) + 1, cols.index("OnDemand") + 1,
+            cols.index("Spot") + 1, "B%d" % (len(summary) + 4))
+    ws = excel.add_table(wb, "Candidates", cand, section="summary",
+                         money_cols=("od_hr", "spot_hr", "Est monthly OD cost",
+                                     "Est monthly saving"),
+                         formats={"od_hr": "#,##0.0000", "spot_hr": "#,##0.0000"},
+                         pct_cols=("Spot discount %",), int_cols=("nodes",),
+                         colorscale_cols=("Spot discount %",),
+                         fail_cols=("cluster_risk_band",), fail_values=("HIGH",),
+                         warn_values=("MED",))
+    if not cand.empty:
+        excel.add_bar_chart(
+            ws, "Estimated monthly saving by candidate pool (top %d)" % min(len(cand), 15),
+            min(len(cand), 15) + 1, list(cand.columns).index("Est monthly saving") + 1,
+            "B%d" % (len(cand) + 4), y_title="USD/month")
+    ws = excel.add_table(wb, "FleetCostTrend", fleet_trend, section="summary",
+                         money_cols=("Total (USD)", "Spot", "OnDemand", "Reservation",
+                                     "SavingsPlan", "Cluster fee"),
+                         pct_cols=("Spot %",))
+    if not fleet_trend.empty:
+        excel.add_line_chart(ws, "Fleet cost by month: total vs spot",
+                             len(fleet_trend) + 1, 2, 3, "J2")
     excel.add_table(wb, "SpotNodePools", spot_pools,
                     int_cols=("nodes", "min_count", "max_count", "effective_min_nodes",
                               "effective_max_nodes", "zones_count", "max_pods"),
@@ -689,11 +928,6 @@ def main(argv=None):
     excel.add_table(wb, "SpotAssessment", assessment,
                     fail_cols=("severity", "result"), fail_values=("HIGH", "FAIL"),
                     warn_values=("WARN",), max_width=100)
-    excel.add_table(wb, "Candidates", cand,
-                    money_cols=("od_hr", "spot_hr", "Est monthly OD cost", "Est monthly saving"),
-                    formats={"od_hr": "#,##0.0000", "spot_hr": "#,##0.0000"},
-                    pct_cols=("Spot discount %",), int_cols=("nodes",),
-                    colorscale_cols=("Spot discount %",))
     excel.add_table(wb, "CostByCluster", split.drop(columns=["cluster_id"]) if not split.empty else split,
                     money_cols=("OnDemand", "Spot", "Reservation", "SavingsPlan",
                                 "Cluster fee", "Total (USD)"),

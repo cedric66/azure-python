@@ -1104,22 +1104,45 @@ def main():
         headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
         check_col = headers.index("check") + 1
         checks = {ws.cell(row=r, column=check_col).value for r in range(2, ws.max_row + 1)}
-        _expect("system_on_demand_pool" in checks and "spot_multi_vm_family" in checks,
+        _expect("system_on_demand_pool" in checks and "spot_multi_vm_family" in checks
+                and "spot_eviction_policy" in checks,
                 "spot assessment checks missing: %s" % checks)
         ws = wb["Candidates"]
         headers = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
         _expect("Est monthly saving" in headers and ws.max_row >= 2,
-                "merged spot report should screen candidates with retail savings")
+                "merged spot report should screen candidates with savings")
+        for col in ("od_hr_source", "cluster_risk_band", "verify_before_move"):
+            _expect(col in headers, "Candidates missing %s" % col)
+        # The fixture bills OD/RI node-hours, so candidates must be priced from
+        # actual amortized billing, not the retail list fallback.
+        src_col = headers.index("od_hr_source") + 1
+        sources = {ws.cell(row=r, column=src_col).value for r in range(2, ws.max_row + 1)}
+        _expect(any(str(s).startswith("actual_billed") for s in sources),
+                "candidates should be priced from actual amortized billing: %s" % sources)
+        # Layered story: KPI scorecard + charts on the summary tabs.
+        card = wb["Scorecard"]
+        card_text = {str(card.cell(row=r, column=c).value)
+                     for r in range(1, card.max_row + 1)
+                     for c in range(1, card.max_column + 1)}
+        for label in ("Spot spend (window)", "Candidate savings screen",
+                      "Prod clusters on spot", "Clusters running spot"):
+            _expect(label in card_text, "Scorecard missing hero card %r" % label)
+        _expect(len(wb["Summary"]._charts) >= 1, "Summary should have an OD-vs-spot chart")
+        _expect(len(wb["Candidates"]._charts) >= 1, "Candidates should have a savings chart")
+        _expect(len(wb["FleetCostTrend"]._charts) >= 1,
+                "FleetCostTrend should have a monthly line chart")
 
     run(spot_cluster_report, base + ["--all"],
-        ["ReadMe", "Summary", "SpotNodePools", "OnDemandNodePools",
-         "NodePoolSkuSummary", "AutoscalerConfig", "SpotAssessment", "Candidates",
+        ["ReadMe", "Scorecard", "Summary", "Candidates", "FleetCostTrend",
+         "SpotNodePools", "OnDemandNodePools", "NodePoolSkuSummary",
+         "AutoscalerConfig", "SpotAssessment",
          "CostByCluster", "CostTrend", "CostByNodePool", "OtherCostItems",
          "CostByMeter", "PriceReference", "RawResourceCost"],
         [chk_spot_detail])
 
     run(aks_report, ["spot"] + base + ["--all", "--only-spot-clusters", "--no-retail-prices"],
-        ["ReadMe", "Summary", "SpotNodePools", "SpotAssessment", "CostByCluster"],
+        ["ReadMe", "Scorecard", "Summary", "FleetCostTrend", "SpotNodePools",
+         "SpotAssessment", "CostByCluster"],
         [lambda wb: _expect(wb["SpotNodePools"].max_row >= 3,
                             "spot alias should route to the merged spot report")])
 
