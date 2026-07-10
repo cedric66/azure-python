@@ -377,9 +377,20 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   so the report falls back to resource-level policyStates for members that emit no
   components (component_type `(resource)`). Assignment filtering is by
   PolicyAssignmentId (NOT assignment name) so MG-inherited initiatives resolve in
-  every child sub. Selection is interactive unless `--initiative/--group/--policy`
-  are given; `--all` forces no prompts (smoke runs it that way). The smoke mock
-  does NOT validate api-versions or OData $filter - these only fail on real Azure.
+  every child sub. **PolicyInsights LOWERCASES everything it stores** (assignment
+  ids, resource ids, policyDefinitionReferenceId) and $filter string matching is
+  case-SENSITIVE: filtering with the mixed-case ARM assignment id returns ZERO rows
+  (the portal shows non-compliance, the report shows nothing). So
+  fetch_components/fetch_resource_states `.lower()` the assignment id in $filter,
+  and all reference-id matching (`sel_refs`/`member_by_ref`/`refs_with_components`)
+  is on `.lower()` - the set definition keeps the AUTHORED casing, which the report
+  re-surfaces in the `reference_id` column via `member_by_ref`. Swallowed 400/404s
+  on those two queries now log() instead of failing silent. Selection is interactive
+  unless `--initiative/--group/--policy` are given; `--all` forces no prompts (smoke
+  runs it that way). The smoke mock does NOT validate api-versions, but it DOES
+  simulate the case-sensitive PolicyAssignmentId $filter (`_states_matching`, applied
+  to lowercased-id STATES/COMPONENTS records) and the set-def fixture uses mixed-case
+  refs - regressing the casing fix fails chk_components with empty sheets.
   IMPORTANT mock-router ordering: PolicyInsights query URLs embed the assignment id
   in `$filter` (which contains the substring "policyAssignments"), so smoke_test's
   fake_request routes `componentpolicystates`/`policystates` BEFORE `policyassignments`

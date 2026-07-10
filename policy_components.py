@@ -205,28 +205,35 @@ def select_policies(members, args, prompt_ok):
 
 def fetch_components(session, sub_id, assignment_id):
     """Non-compliant component records for one assignment in one subscription."""
+    # PolicyInsights stores ids lowercased and matches $filter strings
+    # case-sensitively: the mixed-case ARM assignment id matches nothing.
     flt = quote("PolicyAssignmentId eq '%s' and ComplianceState eq 'NonCompliant'"
-                % assignment_id)
+                % assignment_id.lower())
     url = ("/subscriptions/%s/providers/Microsoft.PolicyInsights/componentPolicyStates/"
            "latest/queryResults?api-version=%s&$filter=%s" % (sub_id, COMPONENT_API, flt))
     try:
         return session.post_paged(url, payload=None)
     except AzureApiError as e:
         if e.status in (400, 404):
-            return []  # no component data in this sub / assignment not component-capable
+            # no component data in this sub / assignment not component-capable
+            log("componentPolicyStates HTTP %s in %s, treating as no component data: %s"
+                % (e.status, sub_id, str(e)[:200]))
+            return []
         raise
 
 
 def fetch_resource_states(session, sub_id, assignment_id):
     """Non-compliant resource-level states for one assignment (fallback source)."""
     flt = quote("PolicyAssignmentId eq '%s' and ComplianceState eq 'NonCompliant'"
-                % assignment_id)
+                % assignment_id.lower())
     url = ("/subscriptions/%s/providers/Microsoft.PolicyInsights/policyStates/latest/"
            "queryResults?api-version=%s&$filter=%s" % (sub_id, STATES_API, flt))
     try:
         return session.post_paged(url, payload=None)
     except AzureApiError as e:
         if e.status in (400, 404):
+            log("policyStates HTTP %s in %s, treating as no resource-level data: %s"
+                % (e.status, sub_id, str(e)[:200]))
             return []
         raise
 
@@ -273,8 +280,10 @@ def main(argv=None):
                    if (not m["groups"] and not sel_group_names)
                    or (set(m["groups"]) & sel_group_names)]
     sel_policies = select_policies(members, args, prompt_ok)
-    sel_refs = {m["ref"] for m in sel_policies}
-    member_by_ref = {m["ref"]: m for m in sel_policies}
+    # PolicyInsights returns policyDefinitionReferenceId lowercased; the set
+    # definition keeps the authored casing, so all ref matching is on .lower().
+    sel_refs = {m["ref"].lower() for m in sel_policies}
+    member_by_ref = {m["ref"].lower(): m for m in sel_policies}
 
     if getattr(args, "list_only", False):
         print("\n%s" % init["display"])
@@ -295,7 +304,7 @@ def main(argv=None):
         log("[%d/%d] %s: components for %s..."
             % (i, len(init["subs"]), s["subscription_name"] or sid, init["display"]))
         for comp in fetch_components(session, sid, aid):
-            ref = comp.get("policyDefinitionReferenceId") or ""
+            ref = (comp.get("policyDefinitionReferenceId") or "").lower()
             if sel_refs and ref not in sel_refs:
                 continue
             refs_with_components.add(ref)
@@ -314,7 +323,7 @@ def main(argv=None):
                     session, comp.get("policyDefinitionId") or "")["name"],
                 "group": next((group_label.get(g, g) for g in (m.get("groups") or [])
                                if g in sel_group_names or not sel_group_names), "(ungrouped)"),
-                "reference_id": ref,
+                "reference_id": m.get("ref") or ref,
                 "compliance": comp.get("complianceState") or "NonCompliant",
                 "timestamp": comp.get("timestamp") or "",
             })
@@ -323,7 +332,7 @@ def main(argv=None):
     for i, s in enumerate(init["subs"], 1):
         sid = s["subscription_id"]
         for st in fetch_resource_states(session, sid, aid):
-            ref = st.get("policyDefinitionReferenceId") or ""
+            ref = (st.get("policyDefinitionReferenceId") or "").lower()
             if (st.get("policyAssignmentId") or "").lower() != aid.lower():
                 continue
             if sel_refs and ref not in sel_refs:
@@ -345,7 +354,7 @@ def main(argv=None):
                     session, st.get("policyDefinitionId") or "")["name"],
                 "group": next((group_label.get(g, g) for g in (m.get("groups") or [])
                                if g in sel_group_names or not sel_group_names), "(ungrouped)"),
-                "reference_id": ref,
+                "reference_id": m.get("ref") or ref,
                 "compliance": st.get("complianceState") or "NonCompliant",
                 "timestamp": st.get("timestamp") or "",
             })

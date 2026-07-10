@@ -10,6 +10,7 @@ import re
 import sys
 import tempfile
 import types
+from urllib.parse import unquote
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -675,12 +676,14 @@ DEFS = {
             {"name": "PodSecurity", "displayName": "Pod Security", "category": "Security"},
             {"name": "ImageProvenance", "displayName": "Image Provenance",
              "category": "Supply Chain"}],
+        # authored (mixed-case) reference ids, like real built-in initiatives;
+        # PolicyInsights state records return them lowercased
         "policyDefinitions": [
-            {"policyDefinitionReferenceId": "no-privileged", "policyDefinitionId": DEF_NO_PRIV,
+            {"policyDefinitionReferenceId": "No-Privileged", "policyDefinitionId": DEF_NO_PRIV,
              "groupNames": ["PodSecurity"]},
-            {"policyDefinitionReferenceId": "ro-rootfs", "policyDefinitionId": DEF_RO_FS,
+            {"policyDefinitionReferenceId": "RO-RootFS", "policyDefinitionId": DEF_RO_FS,
              "groupNames": ["PodSecurity"]},
-            {"policyDefinitionReferenceId": "allowed-registries",
+            {"policyDefinitionReferenceId": "Allowed-Registries",
              "policyDefinitionId": DEF_ALLOWED_REG, "groupNames": ["ImageProvenance"]}]}},
     DEF_AUDIT_TLS.lower(): {"properties": {"displayName": "Audit HTTPS ingress in AKS",
                                            "metadata": {"category": "Kubernetes"}}},
@@ -695,21 +698,23 @@ DEFS = {
         "metadata": {"category": "Kubernetes"}}},
 }
 K8S_BASELINE_ID = ASSIGNMENTS[S1][0]["id"]  # MG-inherited, same id in S1 and S2
+# PolicyInsights state records return assignment ids and reference ids LOWERCASED
+# (real service behavior; the ARM assignment id above stays mixed-case).
 STATES = {
-    S1: [{"resourceId": CL1, "policyAssignmentId": ASSIGNMENTS[S1][1]["id"],
+    S1: [{"resourceId": CL1, "policyAssignmentId": ASSIGNMENTS[S1][1]["id"].lower(),
           "policyDefinitionId": DEF_AUDIT_TLS, "complianceState": "NonCompliant",
           "policyDefinitionAction": "audit", "policyDefinitionReferenceId": ""},
-         {"resourceId": CL2, "policyAssignmentId": ASSIGNMENTS[S1][1]["id"],
+         {"resourceId": CL2, "policyAssignmentId": ASSIGNMENTS[S1][1]["id"].lower(),
           "policyDefinitionId": DEF_AUDIT_TLS, "complianceState": "Compliant",
           "policyDefinitionAction": "audit", "policyDefinitionReferenceId": ""},
-         # allowed-registries member has no component data -> resource-level fallback
-         {"resourceId": CL1, "policyAssignmentId": K8S_BASELINE_ID,
+         # Allowed-Registries member has no component data -> resource-level fallback
+         {"resourceId": CL1, "policyAssignmentId": K8S_BASELINE_ID.lower(),
           "policyDefinitionId": DEF_ALLOWED_REG, "complianceState": "NonCompliant",
           "policyDefinitionAction": "audit", "policyDefinitionReferenceId": "allowed-registries"}],
-    S2: [{"resourceId": CL3, "policyAssignmentId": ASSIGNMENTS[S2][0]["id"],
+    S2: [{"resourceId": CL3, "policyAssignmentId": K8S_BASELINE_ID.lower(),
           "policyDefinitionId": DEF_POD_SEC, "complianceState": "NonCompliant",
           "policyDefinitionAction": "deny", "policyDefinitionReferenceId": "podsec-1"},
-         {"resourceId": CL3, "policyAssignmentId": K8S_BASELINE_ID,
+         {"resourceId": CL3, "policyAssignmentId": K8S_BASELINE_ID.lower(),
           "policyDefinitionId": DEF_ALLOWED_REG, "complianceState": "NonCompliant",
           "policyDefinitionAction": "audit", "policyDefinitionReferenceId": "allowed-registries"}],
 }
@@ -717,8 +722,9 @@ STATES = {
 # componentPolicyStates: granular non-compliant components (e.g. Kubernetes pods)
 # for the pod-security initiative. Keyed by subscription (read from the URL).
 def _comp(rid, ref, def_id, ctype, cname):
-    return {"resourceId": rid, "policyAssignmentId": K8S_BASELINE_ID,
-            "policyDefinitionReferenceId": ref, "policyDefinitionId": def_id,
+    # ids/refs lowercased like real PolicyInsights records
+    return {"resourceId": rid, "policyAssignmentId": K8S_BASELINE_ID.lower(),
+            "policyDefinitionReferenceId": ref.lower(), "policyDefinitionId": def_id,
             "complianceState": "NonCompliant", "componentType": ctype,
             "componentId": "%s/%s" % (ctype, cname), "componentName": cname,
             "timestamp": "2026-06-14T00:00:00Z"}
@@ -767,6 +773,16 @@ ACTIVITY = {"value": [
 ]}
 
 
+def _states_matching(url, records):
+    """Apply a PolicyAssignmentId $filter the way real PolicyInsights does:
+    stored ids are lowercased and the string match is case-SENSITIVE, so a
+    mixed-case ARM assignment id matches nothing."""
+    m = re.search(r"policyassignmentid\s+eq\s+'([^']*)'", unquote(url), re.I)
+    if not m:
+        return records
+    return [r for r in records if r.get("policyAssignmentId") == m.group(1)]
+
+
 def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
                  min_interval=None):
     self.last_headers = {}
@@ -807,10 +823,10 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
     # "policyAssignments"), so route component/state queries BEFORE assignments.
     if "componentpolicystates" in low:  # must precede the policystates check
         sub = low.split("/subscriptions/")[1].split("/")[0]
-        return {"value": COMPONENTS.get(sub, [])}
+        return {"value": _states_matching(url, COMPONENTS.get(sub, []))}
     if "policystates" in low:
         sub = low.split("/subscriptions/")[1].split("/")[0]
-        return {"value": STATES.get(sub, [])}
+        return {"value": _states_matching(url, STATES.get(sub, []))}
     if "policyassignments" in low:
         sub = low.split("/subscriptions/")[1].split("/")[0]
         return {"value": ASSIGNMENTS.get(sub, [])}
