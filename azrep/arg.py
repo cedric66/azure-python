@@ -77,6 +77,14 @@ Resources
 
 
 
+SPOT_EVICTION_RATE_KQL = """
+SpotResources
+| where type =~ 'microsoft.compute/skuspotevictionrate/location'
+| project skuName = tolower(tostring(sku.name)),
+    location = tolower(tostring(location)),
+    evictionRate = tostring(properties.evictionRate)
+"""
+
 HEALTHRESOURCES_KQL = """
 healthresources
 | where type =~ 'microsoft.resourcehealth/resourceannotations'

@@ -6,11 +6,37 @@ import time
 
 import requests
 
-from .http_client import log
+from .http_client import AzureApiError, log
 
 METRICS_API = "2018-01-01"
 ACTIVITY_API = "2015-04-01"
 AKS_API = "2024-05-01"
+PLACEMENT_API = "2025-06-05"
+
+
+def spot_placement_score(session, subscription_id, location, skus,
+                         desired_count=1, desired_locations=None, zones=True):
+    """Forward-looking Spot Placement Score (High/Medium/Low, or
+    DataNotFoundOrStale) per sku/region/zone from the Spot Placement Scores API
+    (Microsoft.Compute .../placementScores/spot/generate, POST, preview). Reader
+    scope. `skus` are Azure SKU forms (Standard_D8s_v5). Returns a list of dicts
+    [{sku, region, availabilityZone, score, isQuotaAvailable}] or [] on error/no
+    data. Caller should cache per (sub, region, sku-set) for 15-30 min - the API
+    is preview and rate-limited; a screening report calls it opt-in only."""
+    if not skus:
+        return []
+    url = ("/subscriptions/%s/providers/Microsoft.Compute/locations/%s/"
+           "placementScores/spot/generate?api-version=%s"
+           % (subscription_id, location, PLACEMENT_API))
+    body = {"availabilityZones": bool(zones), "desiredCount": int(desired_count or 1),
+            "desiredLocations": desired_locations or [location],
+            "desiredSizes": [{"sku": s} for s in skus]}
+    try:
+        data = session.post(url, payload=body)
+    except AzureApiError as e:
+        log("spot placement score failed (%s / %s): %s" % (location, ",".join(skus), e))
+        return []
+    return (data or {}).get("placementScores") or []
 
 
 def _p95(values):

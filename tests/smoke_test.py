@@ -796,6 +796,16 @@ HEALTHRESOURCES = {"data": [
      "subscriptionId": "22222222-2222-2222-2222-222222222222"},
 ]}
 
+# SpotResources banded eviction rates (projected shape from SPOT_EVICTION_RATE_KQL).
+# aks-prod-01's spot pool 'bat' is Standard_D8s_v5 in westeurope at a high band;
+# same 8vCPU/32GiB D8as_v5 sits at the lowest band -> a swap candidate.
+SPOT_EVICTION_RATES = {"data": [
+    {"skuName": "standard_d8s_v5", "location": "westeurope", "evictionRate": "15-20"},
+    {"skuName": "standard_d8as_v5", "location": "westeurope", "evictionRate": "0-5"},
+    {"skuName": "standard_d8s_v4", "location": "westeurope", "evictionRate": "10-15"},
+    {"skuName": "standard_d8s_v5", "location": "eastus", "evictionRate": "5-10"},
+]}
+
 
 
 def _states_matching(url, records):
@@ -825,6 +835,10 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
                 rgs = {x.strip().strip("'").replace("''", "'").lower()
                        for x in m.group(1).split(",")}
                 data = [d for d in data if d["resourceGroup"].lower() in rgs]
+        elif "spotresources" in q.lower() or "skuspotevictionrate" in q.lower():
+            # SpotResources rows are SKU/region-scoped (no per-row subscriptionId),
+            # so bypass the trailing subscription filter like real ARG does.
+            return {"data": SPOT_EVICTION_RATES.get("data", []), "$skipToken": None}
         elif "healthresources" in q.lower() or "resourceannotations" in q.lower():
             # simulate the KQL annotationName filter (mock does not run KQL) so the
             # VirtualMachineDeallocationInitiated row is excluded like real Azure
@@ -1372,9 +1386,10 @@ def main():
         [chk_nonprod_spot])
 
     def chk_eviction(wb):
-        sheets_expected = ["Scorecard", "RiskAssessment", "EvictionSnapshot",
-                          "ChurnTrend", "RemediationGuide", "SpotPoolInventory",
-                          "RawHealthResources", "RawActivityLog", "Limitations"]
+        sheets_expected = ["Scorecard", "RiskAssessment", "SkuAlternatives",
+                          "EvictionSnapshot", "ChurnTrend", "RemediationGuide",
+                          "SpotPoolInventory", "EvictionRates", "RawHealthResources",
+                          "RawActivityLog", "Limitations"]
         for sheet in sheets_expected:
             _expect(sheet in wb.sheetnames,
                    "spot_eviction: missing sheet %s (has %s)" % (sheet, wb.sheetnames))
@@ -1414,10 +1429,24 @@ def main():
                 _expect(band in {"HIGH", "MED", "LOW"},
                        "Risk Band should be one of HIGH/MED/LOW, got %s" % band)
 
+        # SkuAlternatives: D8s_v5 spot pool in westeurope (15-20 band) should get a
+        # lower-eviction swap candidate (D8as_v5 at 0-5).
+        ws_alt = wb["SkuAlternatives"]
+        hdr = [ws_alt.cell(row=1, column=j).value for j in range(1, ws_alt.max_column + 1)]
+        _expect("Recommended SKU" in hdr and "Status" in hdr,
+               "SkuAlternatives missing expected columns: %s" % hdr)
+        sc = hdr.index("Status") + 1
+        rc = hdr.index("Recommended SKU") + 1
+        swap = [(ws_alt.cell(row=r, column=rc).value)
+                for r in range(2, ws_alt.max_row + 1)
+                if ws_alt.cell(row=r, column=sc).value == "SWAP CANDIDATE"]
+        _expect(any(str(v).lower() == "standard_d8as_v5" for v in swap),
+               "SkuAlternatives should recommend Standard_D8as_v5, got %s" % swap)
+
     run(spot_eviction, base + ["--all", "--days", "14"],
-        ["ReadMe", "Scorecard", "RiskAssessment", "EvictionSnapshot", "ChurnTrend",
-         "RemediationGuide", "SpotPoolInventory", "RawHealthResources",
-         "RawActivityLog", "Limitations"],
+        ["ReadMe", "Scorecard", "RiskAssessment", "SkuAlternatives", "EvictionSnapshot",
+         "ChurnTrend", "RemediationGuide", "SpotPoolInventory", "EvictionRates",
+         "RawHealthResources", "RawActivityLog", "Limitations"],
         [chk_eviction])
 
 

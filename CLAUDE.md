@@ -95,7 +95,7 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | spot | spot_cluster_report.py | Cost Mgmt + ARG + retail prices |
 | spot-design | spot_split_design.py | ARG + retail prices |
 | spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices + Activity Log (node-RG eviction proxy) |
-| spot-eviction | spot_eviction.py | Azure Resource Health (healthresources: VirtualMachinePreempted), ARG, Activity Log (node-RG VMSS churn) |
+| spot-eviction | spot_eviction.py | Azure Resource Health (healthresources: VirtualMachinePreempted), ARG (+ SpotResources banded eviction rates), Activity Log (node-RG VMSS churn), Retail Prices, opt-in Spot Placement Score API |
 | utilization | utilization_idle.py | ARG + Monitor (1 paced call/cluster) |
 | governance | governance.py | ARG only; CHECKS list of (id, desc, fn(c, pools)->(status, detail)) |
 | conformance | conformance.py | ARG only; rules built from a golden YAML (sandbox config schema, subset) via build_rules(); requires --golden |
@@ -118,6 +118,27 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 `--image-warn-days`, `--hotspot-min-usd`.
 
 - `spot-eviction` (spot_eviction.py): healthresources `VirtualMachinePreempted` = CLASSIFIER (precise, ephemeral); vmss_churn_events = COUNTER (durable, noisy). Filter healthresources by annotationName only (NOT context/category — MS docs vary 'Platform Initiated' vs 'Platform-Initiated'), ARG table is `healthresources` NOT `resources`. Attribution via targetResourceId path: VMSS-name segment (after virtualMachineScaleSets/) matched to pool by regex `^aks-([a-z0-9]+)-[a-z0-9]+-vmss$`. Pool `spot_max_price` discriminator: -1 = capacity-reclaim only; fixed cap = price eviction possible. Compare pool priority field case-insensitively (`"Spot"` vs lowercase). CAVEAT: healthresources is a latest-snapshot table (~14-day change history); whether it emits VirtualMachinePreempted for AKS VMSS-Uniform instances and whether annotations survive node replacement are unverified. See docs/spot_eviction_verification.md.
+  SOLUTION side (`SkuAlternatives` summary tab + `EvictionRates` reference): ARG
+  `SpotResources` table (`arg.SPOT_EVICTION_RATE_KQL`, type
+  `microsoft.compute/skuspotevictionrate/location`) gives a BANDED eviction rate per
+  SKU/region as a string bucket ("0-5"/"5-10"/"10-15"/"15-20"/"20+", next-hour %) -
+  `EVICTION_ORDER`/`band_rank` ordinalize it (unknown ranks WORST=99 so a rate we
+  can't read is never recommended). `sku_alternative_rows` finds, per spot pool,
+  same-vCPU/mem in-region SKUs (candidates drawn from the region's OWN SpotResources
+  rows ∩ the static `_SKU_CAP` map, so they're region-available) with a strictly
+  lower band; ARM64 surfaced with an "Arch Note" but never silently preferred (same
+  convention as cost_efficiency SKU modernization). Price delta via
+  `retail_vm_prices`. `--placement-score` (opt-in) additionally calls
+  `armextras.spot_placement_score` (Spot Placement Score API, POST
+  `Microsoft.Compute/locations/{loc}/placementScores/spot/generate`, api `2025-06-05`,
+  PREVIEW, Reader scope) for a forward-looking High/Medium/Low (may return
+  DataNotFoundOrStale); best score across zones kept via `_score_rank`. A swap is
+  disruptive (spot priority immutable -> new pool + drain): every row carries
+  `verify_before_move` - it SCREENS, not a migration plan. SpotResources rows are
+  SKU/region-scoped (NO per-row subscriptionId) so the smoke mock returns them BEFORE
+  the shared subscriptionId row-filter (early return), routed by "spotresources"/
+  "skuspotevictionrate" in the query; fixture `SPOT_EVICTION_RATES` gives D8s_v5@15-20
+  + D8as_v5@0-5 in westeurope so `chk_eviction` asserts a D8as_v5 SWAP CANDIDATE.
 ## Conventions (follow these when adding a report)
 
 - Module pattern: docstring (first line becomes argparse description), constants,
