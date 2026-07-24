@@ -43,6 +43,28 @@ uv run python aks_report.py sandbox plan sandbox.example.yaml
 uv run python aks_report.py list
 ```
 
+## Python interpreter
+
+The project pins Python 3.12 via `.python-version`, so `uv` fetches a managed
+CPython 3.12 automatically. `requires-python` is `>=3.12`, so any 3.12+
+interpreter is fine. On a box where the managed download fails (flaky network or
+a restricted CDN — you'll see `Invalid tar file` / `stream error detected`) or
+where only a newer Python (e.g. 3.13) is installed, point `uv` at the system
+interpreter instead of downloading one:
+
+```bash
+# clear a stale venv + any corrupt partial download, then use system Python
+rm -rf .venv ~/.local/share/uv/python/.temp
+uv run --python 3.13 --python-preference only-system python aks_report.py
+```
+
+To make it stick for the session without editing the committed `.python-version`:
+
+```bash
+export UV_PYTHON=3.13 UV_PYTHON_PREFERENCE=only-system
+uv run python aks_report.py
+```
+
 The files below are the modules the launcher calls.
 
 ## Report Modules
