@@ -427,7 +427,8 @@ def main(argv=None):
                         for ps in pools_by_cluster.values() for p in ps}
     eviction_rate = {}
     evrate_rows = []
-    for r in arg.query(session, arg.SPOT_EVICTION_RATE_KQL, list(sub_ids)):
+    raw_evrate = arg.query(session, arg.SPOT_EVICTION_RATE_KQL, list(sub_ids))
+    for r in raw_evrate:
         loc = str(r.get("location", "")).lower()
         if in_scope_regions and loc not in in_scope_regions:
             continue
@@ -436,6 +437,10 @@ def main(argv=None):
         eviction_rate[(sku_key, loc)] = band
         evrate_rows.append({"SKU": azure_sku(sku_key), "Region": loc,
                            "Eviction Band %": band})
+    log("Spot eviction rates: %d rows from ARG, %d kept after region filter "
+        "(%d spot-pool region(s) in scope: %s)"
+        % (len(raw_evrate), len(evrate_rows), len(in_scope_regions),
+           ", ".join(sorted(in_scope_regions)) or "none"))
 
     placement_by_region = {}
     if args.placement_score:
