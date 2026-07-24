@@ -100,7 +100,7 @@ def flat_pool(raw):
 
 
 def build_plan(od_raw, pools, args):
-    import spot_split_design
+    from reports.spot import spot_split_design
     if not 0 < args.spot_share < 1:
         sys.exit("--spot-share must be between 0 and 1 (exclusive).")
     split_args = argparse.Namespace(od_floor=1 - args.spot_share, headroom=0.3)

@@ -2,9 +2,10 @@
 
 One front-door Python script, `aks_report.py`, for AKS reports across many Azure
 subscriptions using **subscription-level read access only** (no kubectl). The
-report-specific files stay in the project as modules, but day-to-day usage goes
-through the launcher. Every report writes a formatted multi-tab `.xlsx` into
-`reports/`.
+report-specific files live under `reports/<category>/` as modules (cost, spot,
+security, lifecycle, platform, estate), but day-to-day usage goes through the
+launcher. Every report writes a formatted multi-tab `.xlsx` into `out/` (override
+with `--out`).
 
 Built for scale: ~25 subscriptions / ~500 clusters. Inventory comes from Azure
 Resource Graph (a handful of calls for the whole fleet); cost comes from
@@ -39,8 +40,8 @@ uv run python aks_report.py spot-savings --all
 uv run python aks_report.py spot-savings --all --only-spot-clusters
 uv run python aks_report.py spot-savings --nonprod-spot   # non-prod clusters that run spot (BU before/after slide)
 uv run python aks_report.py spot-savings --all --no-eviction-scan
-uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
-uv run python aks_report.py sandbox plan sandbox.example.yaml
+uv run python aks_report.py convert README.md --to all --config examples/report_style.example.yaml
+uv run python aks_report.py sandbox plan examples/sandbox.example.yaml
 uv run python aks_report.py list
 ```
 
@@ -174,7 +175,7 @@ docker run --rm \
   -e AZURE_CLIENT_SECRET="<secret>" \
   -e AZURE_TENANT_ID="<tenant-id>" \
   -v "$PWD/subscriptions.csv:/app/subscriptions.csv:ro" \
-  -v "$PWD/reports:/app/reports" \
+  -v "$PWD/out:/app/out" \
   aks-reporting cost --env dev
 ```
 
@@ -186,7 +187,7 @@ docker run --rm -it \
   -e AZURE_CLIENT_SECRET="<secret>" \
   -e AZURE_TENANT_ID="<tenant-id>" \
   -v "$PWD/subscriptions.csv:/app/subscriptions.csv:ro" \
-  -v "$PWD/reports:/app/reports" \
+  -v "$PWD/out:/app/out" \
   aks-reporting
 ```
 
@@ -228,12 +229,12 @@ and policies to test.
 
 Start by copying the example. Both JSON and YAML configs are supported
 (`load_config` picks the parser by extension) - if you prefer JSON throughout,
-use `sandbox.example.json`; policy definitions under `policies/` are plain
+use `examples/sandbox.example.json`; policy definitions under `policies/` are plain
 JSON either way:
 
 ```bash
-cp sandbox.example.json sandbox.json     # JSON workflow
-cp sandbox.example.yaml sandbox.yaml     # or YAML, same schema
+cp examples/sandbox.example.json sandbox.json     # JSON workflow
+cp examples/sandbox.example.yaml sandbox.yaml     # or YAML, same schema
 ```
 
 Edit these values first:
@@ -429,7 +430,7 @@ sandbox config, subset allowed - every key you set becomes a rule), prove the
 baseline actually deploys, then measure fleet drift against it:
 
 ```bash
-cp sandbox.example.yaml golden.yaml          # edit down to your baseline keys
+cp examples/sandbox.example.yaml golden.yaml          # edit down to your baseline keys
 uv run python aks_report.py sandbox deploy golden.yaml --yes --wait   # baseline must deploy
 uv run python aks_report.py conformance --golden golden.yaml --all    # fleet drift scorecard
 ```
@@ -578,7 +579,7 @@ uv run python aks_report.py efficiency --nonprod --no-retail-prices
 uv run python aks_report.py container-eol
 uv run python aks_report.py container-eol --products ubuntu,golang,dotnet
 uv run python aks_report.py aks-lifecycle --releases 52
-uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
+uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules examples/vulnerability_classification.example.json
 uv run python aks_report.py vulnerabilities --cves cves.txt --offline
 ```
 
@@ -589,7 +590,7 @@ format or a simple CVE list and want an Excel workbook that separates likely
 base-image, application dependency, and platform/runtime-framework ownership.
 
 ```bash
-uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
+uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules examples/vulnerability_classification.example.json
 uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules classification-rules/ --offline
 uv run python aks_report.py vulnerabilities --cves cves.txt
 ```
@@ -602,7 +603,7 @@ Inputs:
   through `--classification-rules` / `--rules`. These are not Azure Policy.
   They are local override rules that teach the script your ownership model
   when Prisma context is ambiguous. The supplied
-  `vulnerability_classification.example.json` shows the schema.
+  `examples/vulnerability_classification.example.json` shows the schema.
 - Internet enrichment: NVD CVE 2.0, CISA KEV, and EPSS. Use `--offline` when
   running without internet; the report will classify from Prisma context and
   local classification rules only.
@@ -691,13 +692,13 @@ The launcher can also convert Markdown documentation to DOCX and PDF:
 ```bash
 uv run python aks_report.py convert README.md --to docx
 uv run python aks_report.py convert README.md --to pdf
-uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
+uv run python aks_report.py convert README.md --to all --config examples/report_style.example.yaml
 ```
 
 The style is configurable through a YAML file. Start with:
 
 ```bash
-cp report_style.example.yaml my_report_style.yaml
+cp examples/report_style.example.yaml my_report_style.yaml
 uv run python aks_report.py convert README.md --to all --config my_report_style.yaml
 ```
 
@@ -827,7 +828,7 @@ environment for repeatable local and Docker runs on Python 3.12+:
 | `openpyxl` | Multi-sheet XLSX generation, formatting, formulas, conditional formatting, native charts |
 | `python-docx` | Markdown to DOCX export with configured styles |
 | `reportlab` | Markdown to PDF export without Pandoc/LibreOffice in the Docker image |
-| `PyYAML` | Human-editable style config files such as `report_style.example.yaml` |
+| `PyYAML` | Human-editable style config files such as `examples/report_style.example.yaml` |
 
 ## Rate limits (handled for you)
 
@@ -1185,7 +1186,7 @@ modernization uses the public Retail Prices API (no auth); pass
 
 ### CVE / Prisma Vulnerability Report
 
-Command: `uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json`
+Command: `uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules examples/vulnerability_classification.example.json`
 
 Sheets created: `Summary`, `PrismaFindings`, `Classification`,
 `Remediation`, `ByImage`, `ByPackage`, `ByLayer`, `CVEReference`,
@@ -1202,5 +1203,5 @@ Sheets created: `Summary`, `PrismaFindings`, `Classification`,
 | `ByPackage` | `package, layer, findings, cves` | `openjdk-17-jre, platform, 1, 1` | Rollup by affected package/component and classified layer. |
 | `ByLayer` | `layer, findings, cves` | `base_image, 5, 4` | Layer-level finding and distinct-CVE counts, with a findings-by-layer bar chart. |
 | `CVEReference` | `cve, nvd_status, published, cvss_score, cvss_severity, cwe, cpe_parts, affected_products, kev, epss, description, references` | `CVE-2026-1234, Analyzed, 2026-01-15, 8.1, HIGH, CWE-78, a; o, debian:openssl, false, 0.12, summary, https://...` | Internet-enriched reference data from NVD/CISA KEV/EPSS, or sparse rows in `--offline` mode. |
-| `ClassificationRules` | `file, type, name, layer, match` | `vulnerability_classification.example.json, classification_rule, Java runtimes are platform, platform, {"package": ["openjdk"]}` | Optional local classification rules used for the run. These are not Azure Policy. |
+| `ClassificationRules` | `file, type, name, layer, match` | `examples/vulnerability_classification.example.json, classification_rule, Java runtimes are platform, platform, {"package": ["openjdk"]}` | Optional local classification rules used for the run. These are not Azure Policy. |
 | `InputColumns` | `source, columns` | `prisma.xlsx, CVE ID, Severity, Package Name, Package Type, Image` | Original Prisma headers detected so you can confirm parser alignment. |

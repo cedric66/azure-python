@@ -456,7 +456,7 @@ def write_temp_sub_csv(cfg):
 
 
 def run_policy_report(cfg, out_dir):
-    import policy_report
+    from reports.security import policy_report
     csv_path = write_temp_sub_csv(cfg)
     try:
         argv = ["--csv", csv_path, "--out", out_dir, "--all"]
@@ -495,7 +495,7 @@ def build_parser():
 
     rep = sub.add_parser("report", help="Run the existing Azure Policy XLSX report for the sandbox subscription.")
     rep.add_argument("config")
-    rep.add_argument("--out", default="reports", help="Output directory for XLSX report")
+    rep.add_argument("--out", default="out", help="Output directory for XLSX report")
 
     cleanup = sub.add_parser("cleanup", help="Delete configured policy artifacts and optionally the resource group.")
     cleanup.add_argument("config")
@@ -525,7 +525,7 @@ def build_parser():
     kt.add_argument("--case", action="append", help="Run only the named case(s)")
     kt.add_argument("--keep", action="store_true", help="Keep test resources/namespace after the run")
     kt.add_argument("--xlsx", action="store_true", help="Also write an XLSX results workbook")
-    kt.add_argument("--out", default="reports", help="Output directory for --xlsx")
+    kt.add_argument("--out", default="out", help="Output directory for --xlsx")
     kt.add_argument("--yes", action="store_true", help="Required for cluster write operations")
 
     cl = sub.add_parser("clone", help="Generate a sandbox config that mirrors a fleet cluster.")
@@ -552,7 +552,7 @@ def build_parser():
     imp.add_argument("--subs", help="Comma-separated subscription names/ids to include")
     imp.add_argument("--env", help="Only clusters in this environment")
     imp.add_argument("--nonprod", action="store_true", help="Only non-prod environments")
-    imp.add_argument("--out", default="reports", help="Output directory for the XLSX report")
+    imp.add_argument("--out", default="out", help="Output directory for the XLSX report")
     imp.add_argument("--yes", action="store_true", help="Required: stages policy in the sandbox")
 
     sp = sub.add_parser("spot-sim", help="Split a sandbox node pool into on-demand + spot and test workloads.")
@@ -567,7 +567,7 @@ def build_parser():
     sp.add_argument("--keep", action="store_true", help="Keep descheduler + scenario namespaces")
     sp.add_argument("--md", action="store_true", help="Write a markdown guide with scenario YAML + results")
     sp.add_argument("--no-prices", action="store_true", help="Skip retail price lookup")
-    sp.add_argument("--out", default="reports", help="Output directory for the XLSX report")
+    sp.add_argument("--out", default="out", help="Output directory for the XLSX report")
     sp.add_argument("--yes", action="store_true", help="Required for Azure write operations")
 
     up = sub.add_parser("upgrade-rehearsal", help="Upgrade the sandbox cluster hop-by-hop with health gates.")
@@ -578,7 +578,7 @@ def build_parser():
     up.add_argument("--no-kubectl", action="store_true", help="Skip kubectl health gates (ARM only)")
     up.add_argument("--control-plane-only", action="store_true", help="Do not upgrade node pools")
     up.add_argument("--force", action="store_true", help="Proceed despite deprecated-API findings")
-    up.add_argument("--out", default="reports", help="Output directory for the XLSX report")
+    up.add_argument("--out", default="out", help="Output directory for the XLSX report")
     up.add_argument("--yes", action="store_true", help="Required for Azure write operations")
     return p
 

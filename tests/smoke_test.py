@@ -945,26 +945,26 @@ def main():
         f.write("%s,contoso-platform,Y\n%s,contoso-shared,Y\n" % (S1, S2))
     out = os.path.join(tmp, "reports")
 
-    import architecture_design
-    import cluster_360
-    import cluster_deepdive
+    from reports.platform import architecture_design
+    from reports.estate import cluster_360
+    from reports.cost import cluster_deepdive
     import aks_report
-    import conformance
-    import cost_efficiency
-    import fleet_cost
-    import fleet_inventory
-    import governance
-    import network_ip_capacity
-    import optimization_report
-    import policy_report
-    import policy_components
-    import spot_cluster_report
-    import spot_savings
-    import spot_eviction
-    import subscription_rearch
-    import tag_chargeback
-    import utilization_idle
-    import version_eol
+    from reports.security import conformance
+    from reports.cost import cost_efficiency
+    from reports.cost import fleet_cost
+    from reports.estate import fleet_inventory
+    from reports.security import governance
+    from reports.platform import network_ip_capacity
+    from reports.cost import optimization_report
+    from reports.security import policy_report
+    from reports.security import policy_components
+    from reports.spot import spot_cluster_report
+    from reports.spot import spot_savings
+    from reports.spot import spot_eviction
+    from reports.platform import subscription_rearch
+    from reports.cost import tag_chargeback
+    from reports.cost import utilization_idle
+    from reports.lifecycle import version_eol
     from azrep import sandbox
     # the sandbox helper modules must import without azure.identity / live Azure
     import azrep.kubectl  # noqa: F401
@@ -1716,15 +1716,15 @@ def main():
 
     run(aks_report, ["vulnerabilities", "--prisma", prisma_path,
                      "--classification-rules", os.path.join(os.path.dirname(os.path.dirname(__file__)),
-                                                            "vulnerability_classification.example.json"),
+                                                            "examples", "vulnerability_classification.example.json"),
                      "--offline", "--out", out],
         ["ReadMe", "Summary", "PrismaFindings", "Classification", "Remediation",
          "ByImage", "ByPackage", "ByLayer", "CVEReference", "ClassificationRules",
          "InputColumns"],
         [chk_vuln])
 
-    import container_os_eol
-    import aks_lifecycle
+    from reports.lifecycle import container_os_eol
+    from reports.lifecycle import aks_lifecycle
 
     def eol_fixture(slug, timeout=30):
         day = dt.timedelta(days=1)

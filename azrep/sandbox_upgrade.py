@@ -15,7 +15,7 @@ from azrep import kubectl as kctl
 from azrep.armextras import aks_supported_versions
 from azrep.http_client import log
 from azrep.sandbox import AKS_API, cluster_id, resolve_path, wait_for_provisioning
-from version_eol import minor
+from reports.lifecycle.version_eol import minor
 
 # K8s APIs REMOVED at each minor (the upgrade crossing that minor breaks these).
 # Source: kubernetes.io/docs/reference/using-api/deprecation-guide/ - review at each new minor.

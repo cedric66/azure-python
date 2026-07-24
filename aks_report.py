@@ -12,9 +12,9 @@ Examples:
   uv run python aks_report.py network --nonprod
   uv run python aks_report.py spot-design --cluster aks-dev-01
   uv run python aks_report.py spot-savings --cluster aks-dev-01
-  uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json
-  uv run python aks_report.py convert README.md --to all --config report_style.example.yaml
-  uv run python aks_report.py sandbox plan sandbox.example.yaml
+  uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules examples/vulnerability_classification.example.json
+  uv run python aks_report.py convert README.md --to all --config examples/report_style.example.yaml
+  uv run python aks_report.py sandbox plan examples/sandbox.example.yaml
   uv run python aks_report.py list
 """
 import importlib
@@ -25,14 +25,14 @@ REPORTS = [
     {
         "key": "inventory",
         "aliases": ("inv", "fleet", "clusters"),
-        "module": "fleet_inventory",
+        "module": "reports.estate.fleet_inventory",
         "title": "Fleet inventory",
         "description": "All cluster, node-pool, network, addon, tag and summary details.",
     },
     {
         "key": "360",
         "aliases": ("cluster-360", "estate", "all-in-one"),
-        "module": "cluster_360",
+        "module": "reports.estate.cluster_360",
         "title": "Cluster 360",
         "description": "All clusters from all subscriptions categorized in one workbook: "
                        "version EOL, governance, cost trend, utilization, health score.",
@@ -40,21 +40,21 @@ REPORTS = [
     {
         "key": "cost",
         "aliases": ("fleet-cost", "costs"),
-        "module": "fleet_cost",
+        "module": "reports.cost.fleet_cost",
         "title": "Fleet cost",
         "description": "3-month amortized cost trend, spot/RI/SP split and SKU change signals.",
     },
     {
         "key": "deepdive",
         "aliases": ("cluster", "cluster-cost"),
-        "module": "cluster_deepdive",
+        "module": "reports.cost.cluster_deepdive",
         "title": "Cluster deep dive",
         "description": "One cluster: daily cost, actual vs amortized, node-pool cost, SKU changes.",
     },
     {
         "key": "design",
         "aliases": ("architecture", "topology", "diagram"),
-        "module": "architecture_design",
+        "module": "reports.platform.architecture_design",
         "title": "Architecture design",
         "description": "Actual-state design workbook plus Mermaid doc, draw.io diagrams "
                        "and a browser-ready HTML design view.",
@@ -62,7 +62,7 @@ REPORTS = [
     {
         "key": "version",
         "aliases": ("versions", "eol", "version-eol"),
-        "module": "version_eol",
+        "module": "reports.lifecycle.version_eol",
         "title": "Version and EOL",
         "description": "AKS supported-version status and node image staleness.",
     },
@@ -70,7 +70,7 @@ REPORTS = [
         "key": "spot",
         "aliases": ("spot-opportunity", "spot-detail", "spot-config", "spot-clusters",
                     "spot-cost"),
-        "module": "spot_cluster_report",
+        "module": "reports.spot.spot_cluster_report",
         "title": "Spot clusters and opportunity",
         "description": "Spot pool config, autoscaler, assessment, cost breakup and "
                        "candidate pools with retail-price savings.",
@@ -78,7 +78,7 @@ REPORTS = [
     {
         "key": "spot-design",
         "aliases": ("spot-split", "split-design"),
-        "module": "spot_split_design",
+        "module": "reports.spot.spot_split_design",
         "title": "Spot split design",
         "description": "Present vs future node-pool split for team-dedicated clusters: "
                        "az commands, workload YAML, rollout plan, Mermaid design doc.",
@@ -86,7 +86,7 @@ REPORTS = [
     {
         "key": "spot-savings",
         "aliases": ("spot-trend", "spot-roi", "spot-after"),
-        "module": "spot_savings",
+        "module": "reports.spot.spot_savings",
         "title": "Spot savings after adoption",
         "description": "Before/after/projection tables after first observed Spot spend, "
                        "with actual-vs-projection chart and retail counterfactual savings.",
@@ -95,7 +95,7 @@ REPORTS = [
     {
         "key": "spot-eviction",
         "aliases": ("eviction", "preemption"),
-        "module": "spot_eviction",
+        "module": "reports.spot.spot_eviction",
         "title": "Spot Node Eviction Risk",
         "description": "Spot VMSS preemption snapshot + churn with remediation "
                        "(Resource Health + Activity Log).",
@@ -103,28 +103,28 @@ REPORTS = [
     {
         "key": "utilization",
         "aliases": ("util", "idle"),
-        "module": "utilization_idle",
+        "module": "reports.cost.utilization_idle",
         "title": "Utilization and idle",
         "description": "CPU/memory platform metrics, idle and stopped-but-billing clusters.",
     },
     {
         "key": "governance",
         "aliases": ("gov", "hygiene"),
-        "module": "governance",
+        "module": "reports.security.governance",
         "title": "Governance scorecard",
         "description": "Control-plane hygiene checks: API access, AAD, policy, autoscaler, zones.",
     },
     {
         "key": "policy",
         "aliases": ("policies", "policy-compliance"),
-        "module": "policy_report",
+        "module": "reports.security.policy_report",
         "title": "Azure Policy",
         "description": "Assignments, compliance, non-compliance and Kubernetes policy blind spots.",
     },
     {
         "key": "policy-components",
         "aliases": ("compliance-drill", "components", "noncompliant-components"),
-        "module": "policy_components",
+        "module": "reports.security.policy_components",
         "title": "Policy non-compliant components",
         "description": "Drill one compliance initiative (assignment) -> groups -> policies "
                        "to the individual non-compliant components (e.g. the failing "
@@ -133,28 +133,28 @@ REPORTS = [
     {
         "key": "network",
         "aliases": ("ip", "ip-capacity", "network-ip"),
-        "module": "network_ip_capacity",
+        "module": "reports.platform.network_ip_capacity",
         "title": "Network and IP capacity",
         "description": "Network model, API exposure, subnet metadata and Azure CNI IP pressure.",
     },
     {
         "key": "tags",
         "aliases": ("tag", "chargeback"),
-        "module": "tag_chargeback",
+        "module": "reports.cost.tag_chargeback",
         "title": "Tags and chargeback",
         "description": "Required tag coverage, missing owner/cost-center tags and value cleanup.",
     },
     {
         "key": "optimization",
         "aliases": ("optimize", "savings"),
-        "module": "optimization_report",
+        "module": "reports.cost.optimization_report",
         "title": "Optimization priorities",
         "description": "Cost, utilization, spot/RI/SP and stopped-billing candidates in one workbook.",
     },
     {
         "key": "efficiency",
         "aliases": ("cost-efficiency", "eff"),
-        "module": "cost_efficiency",
+        "module": "reports.cost.cost_efficiency",
         "title": "Cost efficiency (beyond spot)",
         "description": "Config-driven cost levers: control-plane tier, ephemeral OS disk, "
                        "SKU modernization, autoscaler/floor hygiene, pool fragmentation.",
@@ -162,7 +162,7 @@ REPORTS = [
     {
         "key": "container-eol",
         "aliases": ("image-eol", "os-eol", "runtime-eol", "eol-radar"),
-        "module": "container_os_eol",
+        "module": "reports.lifecycle.container_os_eol",
         "title": "Container & OS EOL radar",
         "description": "endoflife.date lifecycle for Alpine/Debian/UBI base images and "
                        "Java/Python/Node.js runtimes.",
@@ -170,7 +170,7 @@ REPORTS = [
     {
         "key": "aks-lifecycle",
         "aliases": ("lifecycle", "aks-releases", "release-notes", "addons"),
-        "module": "aks_lifecycle",
+        "module": "reports.lifecycle.aks_lifecycle",
         "title": "AKS lifecycle & release radar",
         "description": "AKS release calendar, add-ons, retirements/deprecations, GA and "
                        "preview features from Microsoft pages.",
@@ -178,7 +178,7 @@ REPORTS = [
     {
         "key": "conformance",
         "aliases": ("golden", "drift", "baseline"),
-        "module": "conformance",
+        "module": "reports.security.conformance",
         "title": "Golden-config conformance",
         "description": "Fleet drift against a golden baseline YAML (sandbox config schema); "
                        "requires --golden <file>.",
@@ -186,7 +186,7 @@ REPORTS = [
     {
         "key": "rearch",
         "aliases": ("rearchitect", "subres"),
-        "module": "subscription_rearch",
+        "module": "reports.platform.subscription_rearch",
         "title": "Subscription re-architecture (cost savings)",
         "description": "One subscription, ALL resources: orphan/idle/redundancy "
                        "findings, Advisor cost recs, actual-cost evidence and a "
@@ -195,7 +195,7 @@ REPORTS = [
     {
         "key": "vulnerabilities",
         "aliases": ("vuln", "cve", "prisma", "prisma-vuln"),
-        "module": "vulnerability_report",
+        "module": "reports.security.vulnerability_report",
         "title": "CVE vulnerability classification",
         "description": "CVE/Prisma XLSX enrichment and base-image/application/platform classification.",
     },
@@ -220,12 +220,12 @@ def print_help():
     print("  uv run python aks_report.py cost --help")
     print("\nDocument conversion:")
     print("  uv run python aks_report.py convert README.md --to docx")
-    print("  uv run python aks_report.py convert README.md --to pdf --config report_style.example.yaml")
+    print("  uv run python aks_report.py convert README.md --to pdf --config examples/report_style.example.yaml")
     print("\nSandbox admin workflow:")
-    print("  uv run python aks_report.py sandbox plan sandbox.example.yaml")
-    print("  uv run python aks_report.py sandbox deploy sandbox.example.yaml --yes --wait")
-    print("  uv run python aks_report.py sandbox policy-apply sandbox.example.yaml --yes")
-    print("  uv run python aks_report.py sandbox scan sandbox.example.yaml --yes")
+    print("  uv run python aks_report.py sandbox plan examples/sandbox.example.yaml")
+    print("  uv run python aks_report.py sandbox deploy examples/sandbox.example.yaml --yes --wait")
+    print("  uv run python aks_report.py sandbox policy-apply examples/sandbox.example.yaml --yes")
+    print("  uv run python aks_report.py sandbox scan examples/sandbox.example.yaml --yes")
     print("  uv run python aks_report.py sandbox clone --cluster-id <ARM-id> --base sandbox.yaml")
     print("  uv run python aks_report.py sandbox k8s-test sandbox.yaml --yes")
     print("  uv run python aks_report.py sandbox impact sandbox.yaml --policy policies/candidate.json --all --yes")
@@ -233,7 +233,7 @@ def print_help():
     print("  uv run python aks_report.py sandbox upgrade-rehearsal sandbox.yaml --to next --yes")
     print("\nVulnerability workflow:")
     print("  uv run python aks_report.py vulnerabilities --cves cves.txt")
-    print("  uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules vulnerability_classification.example.json")
+    print("  uv run python aks_report.py vulnerabilities --prisma prisma.xlsx --classification-rules examples/vulnerability_classification.example.json")
 
 
 def print_list():

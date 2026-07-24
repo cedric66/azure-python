@@ -223,3 +223,6 @@ __marimo__/
 .agents/skills/*
 .claude/skills/*
 .codex/skills/*
+
+# Generated report output (source lives in reports/, output goes to out/)
+/out/

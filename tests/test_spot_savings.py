@@ -10,7 +10,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import spot_savings
+from reports.spot import spot_savings
 
 
 CLUSTER = {

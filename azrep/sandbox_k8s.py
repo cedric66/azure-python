@@ -190,7 +190,7 @@ def run(session, cfg, args):
         wanted = set(args.case)
         cases = [c for c in cases if c.get("name") in wanted]
     if not cases:
-        sys.exit("No k8s_tests.cases in the config%s. See sandbox.example.yaml."
+        sys.exit("No k8s_tests.cases in the config%s. See examples/sandbox.example.yaml."
                  % (" matching --case" if args.case else ""))
 
     kubeconfig = kctl.fetch_kubeconfig(cfg, session=session)

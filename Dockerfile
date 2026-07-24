@@ -16,7 +16,7 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
 COPY . .
-RUN mkdir -p reports exports
+RUN mkdir -p out exports
 
 ENTRYPOINT ["uv", "run", "--frozen", "python", "aks_report.py"]
 CMD ["--help"]

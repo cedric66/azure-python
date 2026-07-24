@@ -380,7 +380,7 @@ def main(argv=None):
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("markdown", help="input .md file")
     p.add_argument("--to", choices=["docx", "pdf", "all"], default="all")
-    p.add_argument("--config", help="YAML style config, e.g. report_style.example.yaml")
+    p.add_argument("--config", help="YAML style config, e.g. examples/report_style.example.yaml")
     p.add_argument("--out-dir", help="output directory")
     p.add_argument("--output-name", help="output basename without extension")
     args = p.parse_args(argv)

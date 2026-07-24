@@ -23,7 +23,8 @@ cluster autoscaler + descheduler + topologySpreadConstraints only.
 ## Layout
 
 ```
-aks_report.py        launcher: REPORTS list maps key/aliases -> module with main(argv)
+aks_report.py        launcher: REPORTS list maps key/aliases -> dotted module
+                     (reports.<category>.<module>) with main(argv)
 azrep/               shared library
   http_client.py     AzureSession: bearer auth, 429 retry-after + QPU headers,
                      5xx backoff+jitter, optional pacing (connect(min_interval=)),
@@ -70,9 +71,28 @@ azrep/               shared library
                      optional VMSS simulateEviction + rebalance watch
   sandbox_upgrade.py `sandbox upgrade-rehearsal`: hop_path(), REMOVED_APIS gate,
                      control-plane/pool upgrades + kubectl health gates
+reports/             report modules, categorized into subpackages (each: docstring,
+                     main(argv), wired in aks_report.REPORTS as reports.<cat>.<mod>)
+  estate/            fleet_inventory, cluster_360
+  cost/              fleet_cost, cost_efficiency, optimization_report, tag_chargeback,
+                     cluster_deepdive, utilization_idle
+  spot/              spot_cluster_report, spot_split_design, spot_savings, spot_eviction
+  security/          governance, conformance, policy_report, policy_components,
+                     vulnerability_report
+  lifecycle/         version_eol, container_os_eol, aks_lifecycle
+  platform/          architecture_design, network_ip_capacity, subscription_rearch
+examples/            *.example.* config/rule templates (sandbox, report_style,
+                     teams, vulnerability_classification)
 manifests/spot/descheduler.yaml  vendored pinned descheduler (Deployment; upstream has no DaemonSet)
 policies/tests/      sample violating/compliant pod manifests for k8s-test
 ```
+
+Cross-package imports use the full dotted path (e.g. `from reports.cost.fleet_cost
+import chunks`, `from reports.lifecycle.version_eol import minor`); azrep modules that
+pull a report (sandbox_upgrade/sandbox/sandbox_spot) do the same. Modules are no
+longer runnable as bare scripts - go through `aks_report.py <key>` or `python -m
+reports.<cat>.<mod>`. Tests bootstrap the repo root onto sys.path and import via
+`from reports.<cat> import <mod>`.
 
 Sandbox CLI: `sandbox plan|deploy|policy-apply|scan|report|cleanup|kubeconfig|
 kubectl|k8s-apply|k8s-delete|k8s-test|clone|impact|spot-sim|upgrade-rehearsal`.
@@ -83,6 +103,9 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 `node_taints`/`node_labels`.
 
 ## Report modules (each: module-level docstring, main(argv), wired in aks_report.REPORTS)
+
+Module files live under `reports/<category>/` (see Layout for the category map);
+the `module` column below is the bare filename.
 
 | key | module | data sources |
 |---|---|---|

@@ -41,10 +41,10 @@ from azrep.costmgmt import CostClient, default_window, dim_in
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
 from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_scope
-from fleet_cost import RG_CHUNK, chunks, last_full_prev
-from governance import CHECKS as GOV_CHECKS
-from utilization_idle import classify as util_classify
-from version_eol import minor
+from reports.cost.fleet_cost import RG_CHUNK, chunks, last_full_prev
+from reports.security.governance import CHECKS as GOV_CHECKS
+from reports.cost.utilization_idle import classify as util_classify
+from reports.lifecycle.version_eol import minor
 
 UTIL_METRICS = ("node_cpu_usage_percentage", "node_memory_working_set_percentage")
 SECURITY_CHECKS = {"api_server_locked_down", "local_accounts_disabled",

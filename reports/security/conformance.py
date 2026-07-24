@@ -14,7 +14,7 @@ from azrep import excel
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
 from azrep.subs import base_parser, load_subscriptions, out_path, pick_scope
-from version_eol import minor
+from reports.lifecycle.version_eol import minor
 
 TIER_ORDER = {"free": 0, "standard": 1, "premium": 2}
 

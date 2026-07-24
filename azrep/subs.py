@@ -339,7 +339,7 @@ def base_parser(desc):
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument("--csv", default="subscriptions.csv",
                    help="input subscription list: subscription_id,subscription_name,include")
-    p.add_argument("--out", default="reports", help="output directory")
+    p.add_argument("--out", default="out", help="output directory")
     p.add_argument("--all", action="store_true",
                    help="all subscriptions, environments and clusters; no prompt")
     p.add_argument("--subs", help="comma-separated subscription ids or names; omitted means all")

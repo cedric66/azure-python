@@ -125,7 +125,7 @@ def main():
     import azrep.armextras as armextras
     armextras._retail_get = fake_retail_get
 
-    import spot_split_design
+    from reports.spot import spot_split_design
     spot_split_design.connect = fake_connect
 
     from openpyxl import load_workbook

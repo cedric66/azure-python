@@ -33,7 +33,7 @@ from azrep.costmgmt import CostClient, dim_in
 from azrep.fleet import load_fleet
 from azrep.http_client import connect, log
 from azrep.subs import base_parser, is_prod, load_subscriptions, out_path, pick_scope
-from spot_cluster_report import (NONSPOT_PRICING, PM_ORDER, _risk_band, chunks,
+from reports.spot.spot_cluster_report import (NONSPOT_PRICING, PM_ORDER, _risk_band, chunks,
                                  pool_from_resource_id, price_reference_rows,
                                  retail_price_lookup, rg_from_resource_id, vm_family)
 
