@@ -76,6 +76,20 @@ Resources
 """
 
 
+
+HEALTHRESOURCES_KQL = """
+healthresources
+| where type =~ 'microsoft.resourcehealth/resourceannotations'
+| where properties.annotationName == 'VirtualMachinePreempted'
+| project targetResourceId = tolower(tostring(properties.targetResourceId)),
+    occurredTime = todatetime(properties.occurredTime),
+    annotationName = tostring(properties.annotationName),
+    annotationContext = tostring(properties.context),
+    annotationCategory = tostring(properties.category),
+    annotationSummary = tostring(properties.summary),
+    subscriptionId
+"""
+
 def query(session, kql, subscription_ids, page=1000):
     rows = []
     ids = list(subscription_ids)

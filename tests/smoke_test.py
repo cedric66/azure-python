@@ -65,7 +65,7 @@ def pool(name, mode, size, count, priority="Regular", zones=(), autoscale=False,
          "nodeImageVersion": image, "type": "VirtualMachineScaleSets",
          "powerState": {"code": power}}
     if priority == "Spot":
-        p["spotMaxPrice"] = -1
+        p["spotMaxPrice"] = kw.get("spot_max_price", -1)
         p["scaleSetEvictionPolicy"] = "Delete"
         p["nodeTaints"] = ["kubernetes.azure.com/scalesetpriority=spot:NoSchedule"]
         p["nodeLabels"] = {"kubernetes.azure.com/scalesetpriority": "spot"}
@@ -151,7 +151,7 @@ CLUSTERS = [
                                 zones=("1", "2", "3"), autoscale=True, ver="1.32.1",
                                 vnet=S2_PROD_SUBNET),
                            pool("bat", "User", "Standard_D8s_v5", 2, priority="Spot",
-                                ver="1.32.1", vnet=S2_PROD_SUBNET)],
+                                ver="1.32.1", vnet=S2_PROD_SUBNET, spot_max_price=0.5)],
      "networkProfile": {"networkPlugin": "azure", "networkPolicy": "azure",
                         "loadBalancerSku": "standard", "outboundType": "loadBalancer"},
      "apiServerAccessProfile": {"authorizedIPRanges": ["1.2.3.0/24", "4.5.6.0/24"]},
@@ -772,6 +772,31 @@ ACTIVITY = {"value": [
                    "/providers/Microsoft.Compute/virtualMachineScaleSets/aks-spt-11111111-vmss"},
 ]}
 
+HEALTHRESOURCES = {"data": [
+    {"targetResourceId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourcegroups/MC_rg-prod_aks-prod-01_westeurope/providers/Microsoft.Compute/virtualMachineScaleSets/aks-bat-44444444-vmss/virtualMachines/0",
+     "occurredTime": "2026-06-15T12:30:00Z",
+     "annotationName": "VirtualMachinePreempted",
+     "annotationContext": "Platform-Initiated",
+     "annotationCategory": "Preempted",
+     "annotationSummary": "VM preempted due to capacity reclaim",
+     "subscriptionId": "22222222-2222-2222-2222-222222222222"},
+    {"targetResourceId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourcegroups/MC_rg-prod_aks-prod-01_westeurope/providers/Microsoft.Compute/virtualMachineScaleSets/aks-bat-44444444-vmss/virtualMachines/1",
+     "occurredTime": "2026-06-14T09:15:00Z",
+     "annotationName": "VirtualMachinePreempted",
+     "annotationContext": "Platform-Initiated",
+     "annotationCategory": "Preempted",
+     "annotationSummary": "VM preempted due to capacity reclaim",
+     "subscriptionId": "22222222-2222-2222-2222-222222222222"},
+    {"targetResourceId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourcegroups/MC_rg-prod_aks-prod-01_westeurope/providers/Microsoft.Compute/virtualMachineScaleSets/aks-bat-44444444-vmss/virtualMachines/2",
+     "occurredTime": "2026-06-13T14:00:00Z",
+     "annotationName": "VirtualMachineDeallocationInitiated",
+     "annotationContext": "Customer-Initiated",
+     "annotationCategory": "Deallocated",
+     "annotationSummary": "VM deallocated by customer",
+     "subscriptionId": "22222222-2222-2222-2222-222222222222"},
+]}
+
+
 
 def _states_matching(url, records):
     """Apply a PolicyAssignmentId $filter the way real PolicyInsights does:
@@ -800,6 +825,11 @@ def fake_request(self, method, url, *, params=None, payload=None, ok404=False,
                 rgs = {x.strip().strip("'").replace("''", "'").lower()
                        for x in m.group(1).split(",")}
                 data = [d for d in data if d["resourceGroup"].lower() in rgs]
+        elif "healthresources" in q.lower() or "resourceannotations" in q.lower():
+            # simulate the KQL annotationName filter (mock does not run KQL) so the
+            # VirtualMachineDeallocationInitiated row is excluded like real Azure
+            data = [d for d in HEALTHRESOURCES.get("data", [])
+                    if d.get("annotationName") == "VirtualMachinePreempted"]
         elif "managedclusters" in q:
             data = CLUSTERS
         elif "microsoft.network/virtualnetworks" in q:
@@ -916,6 +946,7 @@ def main():
     import policy_components
     import spot_cluster_report
     import spot_savings
+    import spot_eviction
     import subscription_rearch
     import tag_chargeback
     import utilization_idle
@@ -931,7 +962,7 @@ def main():
     for mod in (architecture_design, cluster_360, cluster_deepdive, conformance,
                 cost_efficiency, fleet_cost, fleet_inventory, governance,
                 network_ip_capacity, optimization_report, policy_report,
-                policy_components, spot_cluster_report, spot_savings,
+                policy_components, spot_cluster_report, spot_savings, spot_eviction,
                 subscription_rearch, tag_chargeback, utilization_idle, version_eol):
         mod.connect = fake_connect
 
@@ -1339,6 +1370,56 @@ def main():
          "MonthlySavings", "SpotTimeline", "TopSavers", "SavingsByEnv",
          "SpotSavingsSummary"],
         [chk_nonprod_spot])
+
+    def chk_eviction(wb):
+        sheets_expected = ["Scorecard", "RiskAssessment", "EvictionSnapshot",
+                          "ChurnTrend", "RemediationGuide", "SpotPoolInventory",
+                          "RawHealthResources", "RawActivityLog", "Limitations"]
+        for sheet in sheets_expected:
+            _expect(sheet in wb.sheetnames,
+                   "spot_eviction: missing sheet %s (has %s)" % (sheet, wb.sheetnames))
+        
+        # RawHealthResources should have exactly 2 rows (deallocation filtered)
+        ws_health = wb["RawHealthResources"]
+        _expect(ws_health.max_row == 3,  # header + 2 data rows
+               "RawHealthResources should have exactly 2 preempted instances (got %d)" % (ws_health.max_row - 1))
+        
+        # EvictionSnapshot should have parsed pool names
+        ws_eviction = wb["EvictionSnapshot"]
+        hdr = [ws_eviction.cell(row=1, column=j).value for j in range(1, ws_eviction.max_column + 1)]
+        if "pool_name" in hdr:
+            pool_col = hdr.index("pool_name") + 1
+            pools = {ws_eviction.cell(row=r, column=pool_col).value
+                    for r in range(2, ws_eviction.max_row + 1)}
+            _expect("bat" in pools, "EvictionSnapshot should parse pool name 'bat' from VMSS: %s" % pools)
+        
+        # RemediationGuide should have both Capacity-Reclaim and Price-Cap Tuning
+        ws_remediation = wb["RemediationGuide"]
+        hdr = [ws_remediation.cell(row=1, column=j).value for j in range(1, ws_remediation.max_column + 1)]
+        if "Strategy" in hdr:
+            strat_col = hdr.index("Strategy") + 1
+            strategies = {ws_remediation.cell(row=r, column=strat_col).value
+                         for r in range(2, ws_remediation.max_row + 1)}
+            _expect("Capacity-Reclaim" in strategies and "Price-Cap Tuning" in strategies,
+                   "RemediationGuide should contain both strategies: %s" % strategies)
+        
+        # Risk bands should be in {HIGH, MED, LOW}
+        ws_risk = wb["RiskAssessment"]
+        hdr = [ws_risk.cell(row=1, column=j).value for j in range(1, ws_risk.max_column + 1)]
+        if "Risk Band" in hdr:
+            band_col = hdr.index("Risk Band") + 1
+            bands = {ws_risk.cell(row=r, column=band_col).value
+                    for r in range(2, ws_risk.max_row + 1) if ws_risk.cell(row=r, column=band_col).value}
+            for band in bands:
+                _expect(band in {"HIGH", "MED", "LOW"},
+                       "Risk Band should be one of HIGH/MED/LOW, got %s" % band)
+
+    run(spot_eviction, base + ["--all", "--days", "14"],
+        ["ReadMe", "Scorecard", "RiskAssessment", "EvictionSnapshot", "ChurnTrend",
+         "RemediationGuide", "SpotPoolInventory", "RawHealthResources",
+         "RawActivityLog", "Limitations"],
+        [chk_eviction])
+
 
     run(utilization_idle, base + ["--all", "--days", "3"],
         ["ReadMe", "Utilization", "IdleCandidates", "Stopped", "Summary"])

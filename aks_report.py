@@ -91,6 +91,15 @@ REPORTS = [
         "description": "Before/after/projection tables after first observed Spot spend, "
                        "with actual-vs-projection chart and retail counterfactual savings.",
     },
+
+    {
+        "key": "spot-eviction",
+        "aliases": ("eviction", "preemption"),
+        "module": "spot_eviction",
+        "title": "Spot Node Eviction Risk",
+        "description": "Spot VMSS preemption snapshot + churn with remediation "
+                       "(Resource Health + Activity Log).",
+    },
     {
         "key": "utilization",
         "aliases": ("util", "idle"),

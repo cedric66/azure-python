@@ -95,6 +95,7 @@ expect: deny|allow|audit, constraint_contains?}]}`; pools accept
 | spot | spot_cluster_report.py | Cost Mgmt + ARG + retail prices |
 | spot-design | spot_split_design.py | ARG + retail prices |
 | spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices + Activity Log (node-RG eviction proxy) |
+| spot-eviction | spot_eviction.py | Azure Resource Health (healthresources: VirtualMachinePreempted), ARG, Activity Log (node-RG VMSS churn) |
 | utilization | utilization_idle.py | ARG + Monitor (1 paced call/cluster) |
 | governance | governance.py | ARG only; CHECKS list of (id, desc, fn(c, pools)->(status, detail)) |
 | conformance | conformance.py | ARG only; rules built from a golden YAML (sandbox config schema, subset) via build_rules(); requires --golden |
@@ -116,6 +117,7 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 0-100 health score. Flags: `--no-cost`, `--no-metrics`, `--months`, `--days`,
 `--image-warn-days`, `--hotspot-min-usd`.
 
+- `spot-eviction` (spot_eviction.py): healthresources `VirtualMachinePreempted` = CLASSIFIER (precise, ephemeral); vmss_churn_events = COUNTER (durable, noisy). Filter healthresources by annotationName only (NOT context/category — MS docs vary 'Platform Initiated' vs 'Platform-Initiated'), ARG table is `healthresources` NOT `resources`. Attribution via targetResourceId path: VMSS-name segment (after virtualMachineScaleSets/) matched to pool by regex `^aks-([a-z0-9]+)-[a-z0-9]+-vmss$`. Pool `spot_max_price` discriminator: -1 = capacity-reclaim only; fixed cap = price eviction possible. Compare pool priority field case-insensitively (`"Spot"` vs lowercase). CAVEAT: healthresources is a latest-snapshot table (~14-day change history); whether it emits VirtualMachinePreempted for AKS VMSS-Uniform instances and whether annotations survive node replacement are unverified. See docs/spot_eviction_verification.md.
 ## Conventions (follow these when adding a report)
 
 - Module pattern: docstring (first line becomes argparse description), constants,
