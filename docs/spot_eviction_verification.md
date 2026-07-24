@@ -174,7 +174,101 @@ path) and querying them there with normal retention policies — that is out
 of scope for this Reader-only, kubectl-free report, but worth a one-line
 pointer for anyone who wants eviction history beyond what ARG can hold.
 
-## 7. Caveats
+## 7. Solution-side signals — SpotResources eviction rates + Placement Score
+
+The report's `SkuAlternatives` tab (the "solution" half) rests on two *other*
+data sources whose live behaviour should be spot-checked the same way. Both
+stay at subscription-Reader scope, kubectl-free. Unlike the healthresources
+question above, these are documented APIs — the verification here is about
+coverage (does your tenant/region actually return data?) and the preview
+API's real behaviour, not an existential "does it emit at all" doubt.
+
+### 7a. SpotResources banded eviction rate (always on)
+
+`arg.SPOT_EVICTION_RATE_KQL` reads the ARG `SpotResources` table
+(`microsoft.compute/skuspotevictionrate/location`) — a banded next-hour
+eviction % per SKU per region. Confirm it returns rows for the regions and
+SKUs your spot pools actually run:
+
+```kql
+SpotResources
+| where type =~ 'microsoft.compute/skuspotevictionrate/location'
+| where location in~ ('westeurope', 'eastus')
+| project skuName = tostring(sku.name), location,
+          evictionRate = tostring(properties.evictionRate)
+| order by location asc, skuName asc
+```
+
+```bash
+az graph query -q "SpotResources | where type =~ 'microsoft.compute/skuspotevictionrate/location' | where location in~ ('westeurope','eastus') | project skuName = tostring(sku.name), location, evictionRate = tostring(properties.evictionRate) | order by location asc, skuName asc"
+```
+
+What to check:
+- **Band vocabulary.** The report's `EVICTION_ORDER` map expects the buckets
+  `0-5`, `5-10`, `10-15`, `15-20`, `20+` (with `20-100` treated as `20+`). If
+  your tenant returns a differently-formatted string (e.g. a bare number, or a
+  `20+%` with a trailing sign), `band_rank` will score it as unknown (worst=99)
+  and silently stop recommending against it — extend `EVICTION_ORDER` to match
+  the real vocabulary if so.
+- **Coverage.** Confirm your pools' current SKUs appear for their region. A SKU
+  missing from the table shows as `Current Band % = (no data)` and gets no
+  recommendation — that's correct-but-blind, not a bug.
+- **Candidate availability.** The report only proposes SKUs that appear in the
+  *same region's* SpotResources rows (so they're region-available) **and** are
+  in the static `_SKU_CAP` map. A genuinely better SKU that's outside `_SKU_CAP`
+  won't be offered — widen the map (`azrep/armextras.py`) if you see obvious
+  gaps.
+
+### 7b. Spot Placement Score API (`--placement-score`, opt-in, preview)
+
+`armextras.spot_placement_score` POSTs to
+`Microsoft.Compute/locations/{location}/placementScores/spot/generate`
+(api-version `2025-06-05`, **preview**) for a forward-looking `High`/`Medium`/
+`Low` score per sku/region/zone. Verify with a raw call before trusting the
+tab's `Placement Score` column:
+
+```bash
+SUB=<subscription-id>
+az rest --method post \
+  --url "https://management.azure.com/subscriptions/$SUB/providers/Microsoft.Compute/locations/westeurope/placementScores/spot/generate?api-version=2025-06-05" \
+  --body '{"availabilityZones": true, "desiredCount": 3, "desiredLocations": ["westeurope"], "desiredSizes": [{"sku": "Standard_D8s_v5"}, {"sku": "Standard_D8as_v5"}]}'
+```
+
+What to check:
+- **Score vocabulary.** `_score_rank` expects `High`/`Medium`/`Low`; anything
+  else (notably `DataNotFoundOrStale`, which the API returns for cold
+  sku/region/zone combos) ranks as unknown and is kept only if nothing better
+  is seen. Seeing `DataNotFoundOrStale` is expected, not a failure — it means
+  Azure has no recent placement data for that combo, and the report just shows
+  it verbatim.
+- **Preview + api-version drift.** This is a preview API; the version can change
+  or the endpoint can move GA. If the call 404s or complains about the
+  api-version, check for a newer version and update `armextras.PLACEMENT_API`.
+  The report already swallows the error and returns an empty score list, so a
+  broken preview API degrades the tab gracefully (blank `Placement Score`), it
+  doesn't fail the run.
+- **Rate limiting / caching.** The API is rate-limited and Microsoft recommends
+  caching results 15–30 min. The report calls it at most once per
+  `(subscription, region)` per run (batching all candidate SKUs into one POST),
+  which is within that guidance for a report you run on a cadence — but don't
+  loop it.
+- **Zonal vs regional.** The report requests `availabilityZones: true` and keeps
+  the **best** score across zones for a SKU (`_score_rank` min). If your pools
+  are pinned to specific zones, the headline score may be more optimistic than
+  the zone you actually deploy to — cross-check the raw per-zone response above
+  before acting on a borderline recommendation.
+
+### 7c. Interpreting the two together
+
+The ARG band is **backward-looking** (trailing ~28 days, region-aggregate,
+coarse 5% buckets); the placement score is **forward-looking** (predictive,
+zone-aware). They can disagree — a SKU with a good historical band can score
+`Low`/`DataNotFoundOrStale` today, or vice-versa. Treat agreement between the
+two as a strong swap signal and disagreement as a "verify in your own region/
+zone before moving" flag — which is exactly what the `verify_before_move`
+column already says on every row.
+
+## 8. Caveats
 
 - Everything above stays at subscription-**Reader** scope and is
   **kubectl-free**, matching the rest of this report family — no
