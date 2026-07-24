@@ -82,7 +82,8 @@ reports/             report modules, categorized into subpackages (each: docstri
   lifecycle/         version_eol, container_os_eol, aks_lifecycle
   platform/          architecture_design, network_ip_capacity, subscription_rearch
 examples/            *.example.* config/rule templates (sandbox, report_style,
-                     teams, vulnerability_classification)
+                     teams, vulnerability_classification, subscriptions); the live
+                     subscriptions.csv is a gitignored copy of subscriptions.example.csv
 manifests/spot/descheduler.yaml  vendored pinned descheduler (Deployment; upstream has no DaemonSet)
 policies/tests/      sample violating/compliant pod manifests for k8s-test
 ```

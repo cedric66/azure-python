@@ -226,3 +226,6 @@ __marimo__/
 
 # Generated report output (source lives in reports/, output goes to out/)
 /out/
+
+# Local subscription list (template lives in examples/subscriptions.example.csv)
+/subscriptions.csv

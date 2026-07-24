@@ -117,7 +117,9 @@ uv run python aks_report.py cost --nonprod --prod-values prod,production,prd,liv
 
 ## Input file
 
-`subscriptions.csv` (edit the included template):
+`subscriptions.csv` (copy the template from
+[`examples/subscriptions.example.csv`](../examples/subscriptions.example.csv) — the
+local `subscriptions.csv` is gitignored so real subscription IDs never get committed):
 
 ```csv
 subscription_id,subscription_name,include

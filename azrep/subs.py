@@ -45,7 +45,7 @@ ENV_WORDS = {
 
 def load_subscriptions(path):
     if not os.path.exists(path):
-        sys.exit("Input file not found: %s\nCreate it from the subscriptions.csv template "
+        sys.exit("Input file not found: %s\nCreate it from examples/subscriptions.example.csv "
                  "(columns: subscription_id,subscription_name,include)." % path)
     subs, seen = [], set()
     with open(path, newline="", encoding="utf-8-sig") as f:

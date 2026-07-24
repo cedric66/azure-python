@@ -3,7 +3,7 @@
 __pycache__/
 **/__pycache__/
 *.pyc
-reports/
+out/
 exports/
 .codex_tmp/
 .pytest_cache/

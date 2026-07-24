@@ -1,6 +1,17 @@
 # Cost & efficiency optimization beyond spot — improvement plan
 
-Status: proposal / plan only. No code in this change.
+_[← Back to the README](../README.md)_
+
+> **Status: mostly shipped.** This started as a design/roadmap note and the Tier-1
+> and Tier-2 levers have since landed. The config-driven levers (control-plane tier,
+> ephemeral OS disk, SKU modernization, autoscaler hygiene, pool fragmentation) ship
+> in the **`efficiency`** report (`reports/cost/cost_efficiency.py`); the off-hours
+> stop and control-plane-tier **cost candidates** ship in **`optimization`**
+> (`reports/cost/optimization_report.py`). See [Report reference](reports.md) for
+> both. What remains unbuilt: monitoring/Log-Analytics ingestion cost (§3.1),
+> Defender addon audit (§3.3), and the fleet-wide orphan sweep (§3.4). The doc is
+> kept as the rationale and the backlog for those.
+
 Audience: contributors to the AKS Reporting Toolkit.
 Scope: subscription **Reader**-only, fleet-wide (~25 subs / ~500 clusters), no
 kubectl against the fleet — same constraints every report module already lives

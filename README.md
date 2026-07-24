@@ -44,7 +44,10 @@ Scope flags (`--all`, `--subs`, `--env`, `--nonprod`, `--cluster`,
 | [Lifecycle & EOL radars](docs/lifecycle.md) | Public lifecycle data (endoflife.date, MS Learn, GitHub) — no Azure access |
 | [Output formats](docs/output-formats.md) | Workbook layout, charts, Markdown→DOCX/PDF, architecture-design companions |
 
-Deep-dive runbook: [docs/spot_eviction_verification.md](docs/spot_eviction_verification.md).
+Deep dives:
+[spot-eviction verification runbook](docs/spot_eviction_verification.md) ·
+[cost-optimization design note / backlog](docs/cost-optimization-beyond-spot.md)
+(the levers behind the `efficiency` and `optimization` reports, plus what's still unbuilt).
 
 ## Reports at a glance
 
@@ -66,7 +69,7 @@ Plus the `sandbox` command family and a `convert` (Markdown→DOCX/PDF) command.
 aks_report.py          launcher (maps each report key → reports.<category>.<module>)
 azrep/                 shared library (HTTP client, ARG, Cost Mgmt, Excel, sandbox, …)
 reports/<category>/    report modules: estate, cost, spot, security, lifecycle, platform
-examples/              *.example.* config/rule templates
+examples/              *.example.* config/rule templates (incl. subscriptions.example.csv)
 manifests/, policies/  vendored descheduler + sample policy test manifests
 docs/                  this documentation
 out/                   generated .xlsx (gitignored)

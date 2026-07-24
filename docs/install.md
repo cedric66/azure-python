@@ -24,11 +24,11 @@ export PATH="$HOME/.local/bin:$PATH"
 
 uv python install 3.12
 uv sync --frozen
-mkdir -p reports exports
 ```
 
-Configure `subscriptions.csv` with the subscriptions to scan, then authenticate
-with one of the credential methods used by `DefaultAzureCredential`.
+Copy `examples/subscriptions.example.csv` to `subscriptions.csv` and fill in the
+subscriptions to scan (the local copy is gitignored), then authenticate with one
+of the credential methods used by `DefaultAzureCredential`.
 
 Azure CLI login:
 
