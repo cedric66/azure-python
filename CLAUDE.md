@@ -485,5 +485,7 @@ No pytest; plain asserts.
 
 1. Wire new reports into `aks_report.py` REPORTS (key, aliases, module, title,
    description) — the launcher and menu come from that list.
-2. Update README.md (module table + usage examples) and tests/smoke_test.py.
+2. Update the docs (README.md is a tidy landing page; the detail lives in
+   `docs/`: `reports.md` module table + field examples, `usage.md` examples,
+   `sandbox.md`, `spot.md`, etc.) and tests/smoke_test.py.
 3. Update THIS file (layout/table/conventions/gotchas as applicable).
