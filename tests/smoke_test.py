@@ -770,6 +770,19 @@ ACTIVITY = {"value": [
      "caller": "", "status": {"value": "Succeeded"},
      "resourceId": "/subscriptions/s/resourceGroups/MC_rg-apps-dev_aks-dev-01_eastus"
                    "/providers/Microsoft.Compute/virtualMachineScaleSets/aks-spt-11111111-vmss"},
+    # Second churn event, on aks-prod-01's ACTUAL spot pool VMSS (pool 'bat'), on a
+    # different day: exercises spot_eviction's per-pool churn attribution (the row
+    # above parses to pool 'spt', which no in-scope pool owns, so it must land in the
+    # cluster-level unattributed column instead of being charged to 'bat') and gives
+    # ChurnTrend two dated rows so the line chart is exercised. The mock's activity
+    # route ignores the resourceGroupName $filter, so both rows reach every cluster
+    # scanned - existing churn assertions are all ">= 1", never exact counts.
+    {"eventTimestamp": "2026-06-11T04:30:00Z",
+     "operationName": {"value": "Microsoft.Compute/virtualMachineScaleSets/delete"},
+     "caller": "", "status": {"value": "Succeeded"},
+     "resourceId": "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups"
+                   "/MC_rg-prod_aks-prod-01_westeurope/providers/Microsoft.Compute"
+                   "/virtualMachineScaleSets/aks-bat-44444444-vmss"},
 ]}
 
 HEALTHRESOURCES = {"data": [
@@ -1399,15 +1412,19 @@ def main():
         _expect(ws_health.max_row == 3,  # header + 2 data rows
                "RawHealthResources should have exactly 2 preempted instances (got %d)" % (ws_health.max_row - 1))
         
-        # EvictionSnapshot should have parsed pool names
+        # EvictionSnapshot is a per cluster/pool roll-up (the raw annotation dump
+        # stays on RawHealthResources): 2 preempted instances on one pool -> 1 row.
         ws_eviction = wb["EvictionSnapshot"]
         hdr = [ws_eviction.cell(row=1, column=j).value for j in range(1, ws_eviction.max_column + 1)]
-        if "pool_name" in hdr:
-            pool_col = hdr.index("pool_name") + 1
-            pools = {ws_eviction.cell(row=r, column=pool_col).value
-                    for r in range(2, ws_eviction.max_row + 1)}
-            _expect("bat" in pools, "EvictionSnapshot should parse pool name 'bat' from VMSS: %s" % pools)
-        
+        for col in ("Pool", "Preempted Instances", "Last Seen", "Age (days)"):
+            _expect(col in hdr, "EvictionSnapshot missing column %s: %s" % (col, hdr))
+        pool_col, cnt_col = hdr.index("Pool") + 1, hdr.index("Preempted Instances") + 1
+        snap = {ws_eviction.cell(row=r, column=pool_col).value:
+                ws_eviction.cell(row=r, column=cnt_col).value
+                for r in range(2, ws_eviction.max_row + 1)}
+        _expect(snap.get("bat") == 2,
+               "EvictionSnapshot should roll 2 preempted instances up to pool 'bat': %s" % snap)
+
         # RemediationGuide should have both Capacity-Reclaim and Price-Cap Tuning
         ws_remediation = wb["RemediationGuide"]
         hdr = [ws_remediation.cell(row=1, column=j).value for j in range(1, ws_remediation.max_column + 1)]
@@ -1418,16 +1435,42 @@ def main():
             _expect("Capacity-Reclaim" in strategies and "Price-Cap Tuning" in strategies,
                    "RemediationGuide should contain both strategies: %s" % strategies)
         
-        # Risk bands should be in {HIGH, MED, LOW}
+        # RiskAssessment: one row per spot pool, carrying both observed signals, the
+        # durable SKU eviction band and the per-pool/unattributed churn split.
         ws_risk = wb["RiskAssessment"]
         hdr = [ws_risk.cell(row=1, column=j).value for j in range(1, ws_risk.max_column + 1)]
-        if "Risk Band" in hdr:
-            band_col = hdr.index("Risk Band") + 1
-            bands = {ws_risk.cell(row=r, column=band_col).value
-                    for r in range(2, ws_risk.max_row + 1) if ws_risk.cell(row=r, column=band_col).value}
-            for band in bands:
-                _expect(band in {"HIGH", "MED", "LOW"},
-                       "Risk Band should be one of HIGH/MED/LOW, got %s" % band)
+        for col in ("Pool", "Risk Band", "Risk Reason", "Eviction Band %", "Zones",
+                    "Churn (ops/day)", "Cluster Churn Unattributed (ops/day)"):
+            _expect(col in hdr, "RiskAssessment missing column %s: %s" % (col, hdr))
+        rows = [{h: ws_risk.cell(row=r, column=j + 1).value for j, h in enumerate(hdr)}
+                for r in range(2, ws_risk.max_row + 1)]
+        for row in rows:
+            _expect(row["Risk Band"] in {"HIGH", "MED", "LOW"},
+                   "Risk Band should be one of HIGH/MED/LOW, got %s" % row["Risk Band"])
+        bat = next((r for r in rows if r["Pool"] == "bat"), None)
+        _expect(bat is not None, "RiskAssessment missing the spot pool 'bat': %s" % rows)
+        # prod + live preemptions + a 15-20 band SKU + churn -> HIGH, and the band
+        # must actually reach the score (it is the durable counterweight to the
+        # ephemeral health snapshot).
+        _expect(bat["Risk Band"] == "HIGH",
+               "prod spot pool on a 15-20 band SKU with preemptions should be HIGH: %s" % bat)
+        _expect("15-20" in str(bat["Eviction Band %"]),
+               "RiskAssessment should surface the SpotResources band: %s" % bat)
+        _expect("eviction-rate SKU" in str(bat["Risk Reason"]),
+               "eviction band should be scored in Risk Reason: %s" % bat)
+        # Churn attribution: the fixture's aks-bat-*-vmss op is charged to 'bat',
+        # the aks-spt-*-vmss op (no such pool here) stays cluster-level unattributed
+        # instead of being double-counted onto every pool.
+        _expect((bat["Churn (ops/day)"] or 0) > 0,
+               "aks-bat-*-vmss churn should attribute to pool 'bat': %s" % bat)
+        _expect((bat["Cluster Churn Unattributed (ops/day)"] or 0) > 0,
+               "unparsed-pool churn should stay in the unattributed column: %s" % bat)
+
+        # ChurnTrend is a fleet daily aggregate, not the raw op list.
+        ws_trend = wb["ChurnTrend"]
+        thdr = [ws_trend.cell(row=1, column=j).value for j in range(1, ws_trend.max_column + 1)]
+        _expect(thdr == ["Date", "Churn Ops", "Clusters Affected", "Pools Affected"],
+               "ChurnTrend unexpected columns: %s" % thdr)
 
         # SkuAlternatives: D8s_v5 spot pool in westeurope (15-20 band) should get a
         # lower-eviction swap candidate (D8as_v5 at 0-5).

@@ -49,10 +49,14 @@ kubectl access.
 `spot-eviction` assesses per-pool preemption risk from two Reader-scope,
 kubectl-free signals and recommends lower-eviction SKUs:
 
-- **EvictionSnapshot** — `healthresources` `VirtualMachinePreempted` annotations
-  (a named, platform-initiated eviction event; a current, *ephemeral* snapshot).
-- **ChurnTrend** — node-RG Activity Log VMSS delete/deallocate ops (durable but
-  noisy; mixes evictions with autoscale-down).
+- **EvictionSnapshot** — per-pool roll-up of `healthresources`
+  `VirtualMachinePreempted` annotations (a named, platform-initiated eviction
+  event; a current, *ephemeral* snapshot). Raw rows stay on `RawHealthResources`.
+- **ChurnTrend** — node-RG Activity Log VMSS delete/deallocate ops aggregated per
+  day (durable but noisy; mixes evictions with autoscale-down). Churn is
+  attributed to the pool its scale-set name resolves to; anything that does not
+  resolve is reported per cluster in a separate *unattributed* column rather than
+  charged to every pool.
 - **SkuAlternatives** — from the ARG `SpotResources` banded eviction rate
   (`0-5`…`20+` % next-hour) per SKU/region, the report finds same-vCPU/mem
   in-region SKUs with a *lower* band as swap candidates, with a retail price
@@ -60,9 +64,15 @@ kubectl-free signals and recommends lower-eviction SKUs:
   score. A swap means a new pool + drain (spot priority is immutable), so every
   row carries a `verify_before_move` caveat.
 
+`RiskAssessment` scores each spot pool HIGH/MED/LOW from those signals plus the
+pool's eviction band, whether it is prod, whether its bid is price-capped and
+whether it is single-zone, and spells out the reasons in a `Risk Reason` column.
+
 Tabs: `Scorecard`, `RiskAssessment`, `SkuAlternatives`, `EvictionSnapshot`,
 `ChurnTrend`, `RemediationGuide`, `SpotPoolInventory`, `EvictionRates`,
 `RawHealthResources`, `RawActivityLog`, `Limitations`.
+
+The run ends with `Report written: out/aks_spot_eviction_<scope>_<stamp>.xlsx`.
 
 ### Testing spot-eviction
 

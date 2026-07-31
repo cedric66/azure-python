@@ -163,6 +163,30 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   the shared subscriptionId row-filter (early return), routed by "spotresources"/
   "skuspotevictionrate" in the query; fixture `SPOT_EVICTION_RATES` gives D8s_v5@15-20
   + D8as_v5@0-5 in westeurope so `chk_eviction` asserts a D8as_v5 SWAP CANDIDATE.
+  STRUCTURE: the row builders are module-level (`preemption_rows`, `snapshot_rows`,
+  `pool_churn_rates`, `churn_trend_rows`, `risk_rows`, `sku_alternative_rows`,
+  `inventory_rows`, `scorecard_cards`) so they are unit-testable; `main()` only
+  orchestrates. Output stem is `aks_spot_eviction` (was `spot_eviction` - every other
+  report is `aks_*`) and `main()` RETURNS the path and log()s `Report written: <path>`.
+  Churn is attributed PER POOL (`pool_churn_rates` keys `(cluster_id, pool)` via
+  `pool_from_vmss_name`); churn whose VMSS name does not parse to an in-scope pool
+  goes to a separate `Cluster Churn Unattributed (ops/day)` column, never added onto
+  every pool's rate (a 2-spot-pool cluster used to report the whole cluster's churn
+  twice). `_risk_band` takes `eviction_band` and `zones` as extra inputs: band rank
+  >=3 +2 / ==2 +1, single-zone spot pool +1 - note the ASYMMETRY with
+  `sku_alternative_rows`, where an unknown band ranks WORST (never recommend what we
+  cannot read) but here scores ZERO (a data gap is not evidence of risk).
+  `EvictionSnapshot` is a per-pool roll-up (not raw rows), `ChurnTrend` a per-day
+  aggregate (Date/Churn Ops/Clusters Affected/Pools Affected) with a line chart;
+  `RiskAssessment` has HIGH/MED conditional formatting + a churn bar chart.
+  `age_days` normalises timestamps with `pd.to_datetime(..., utc=True,
+  format="mixed")` - without `format="mixed"` pandas infers ONE format from the first
+  element and coerces the rest to NaT, silently dropping the newest preemption.
+  The SpotResources query is SKIPPED when no spot pool is in scope (unfiltered it
+  returns every SKU in every region). Smoke fixture has a SECOND ACTIVITY churn row
+  on `aks-bat-44444444-vmss` (aks-prod-01's real spot pool, different day) so
+  `chk_eviction` can assert per-pool attribution, the unattributed column, a HIGH
+  band citing the 15-20 eviction rate, and a 2-row ChurnTrend.
 ## Conventions (follow these when adding a report)
 
 - Module pattern: docstring (first line becomes argparse description), constants,
