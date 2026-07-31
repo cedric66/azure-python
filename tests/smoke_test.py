@@ -1029,6 +1029,49 @@ def main():
     _expect(sub_helpers.infer_env_from_name("aks-r-01") == "dr",
             "short code -r- should infer dr")
 
+    # Focused regression checks for the spot-eviction row builders. The workbook
+    # fixture exercises the common path; these cover fleet collisions and mixed
+    # timestamp/data-gap edges that are easy to miss in an end-to-end assertion.
+    band, reason = spot_eviction._risk_band(
+        False, None, 0.1, False, False, eviction_band=None, zones=0)
+    _expect(band == "LOW" and "eviction-rate SKU" not in reason,
+            "unknown eviction band must add zero risk: %s / %s" % (band, reason))
+
+    mixed_snapshot = spot_eviction.pd.DataFrame([
+        {"subscription": "s", "cluster_id": "c", "cluster_name": "c",
+         "pool_name": "spot", "instance_id": "0", "vmss_name": "aks-spot-a-vmss",
+         "occurred_time": "2026-06-10T04:00:00Z", "annotation_context": ""},
+        {"subscription": "s", "cluster_id": "c", "cluster_name": "c",
+         "pool_name": "spot", "instance_id": "1", "vmss_name": "aks-spot-a-vmss",
+         "occurred_time": "2026-06-11 05:00:00", "annotation_context": ""},
+    ])
+    snapshot = spot_eviction.snapshot_rows(
+        mixed_snapshot, {("c", "spot"): "Standard_D4s_v5"})
+    _expect(snapshot[0]["Last Seen"] == "2026-06-11 05:00",
+            "mixed timestamp formats must preserve the newest snapshot time: %s" % snapshot)
+
+    duplicate_instance_ids = spot_eviction.pd.DataFrame([
+        {"cluster_id": "c1", "vmss_name": "aks-spot-a-vmss", "instance_id": "0"},
+        {"cluster_id": "c2", "vmss_name": "aks-spot-b-vmss", "instance_id": "0"},
+    ])
+    cards = spot_eviction.scorecard_cards(
+        spot_eviction.pd.DataFrame(), duplicate_instance_ids,
+        spot_eviction.pd.DataFrame(), 2, 0, 14)
+    _expect(cards[0]["value"] == 2,
+            "scorecard must distinguish repeated VMSS instance IDs across clusters: %s"
+            % cards[0]["value"])
+
+    same_named_pools = spot_eviction.pd.DataFrame([
+        {"timestamp": "2026-06-10T00:00:00Z", "cluster_id": "c1",
+         "pool_name": "spot"},
+        {"timestamp": "2026-06-10T01:00:00Z", "cluster_id": "c2",
+         "pool_name": "spot"},
+    ])
+    trend = spot_eviction.churn_daily_rows(same_named_pools, 14)
+    _expect(trend[0]["Pools Affected"] == 2,
+            "trend must count cluster/pool pairs, not globally repeated pool names: %s"
+            % trend)
+
     run(fleet_inventory, base + ["--all"],
         ["ReadMe", "Clusters", "NodePools", "NetworkSecurity", "Addons", "Tags", "Summary"],
         [lambda wb: _expect(wb["Clusters"].max_row == 4, "3 clusters expected")])
