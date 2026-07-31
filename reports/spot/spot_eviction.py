@@ -78,6 +78,12 @@ def extract_vmss_name(resource_id):
     return ""
 
 
+def _utc_timestamps(values):
+    """Parse each timestamp independently and normalise the result to UTC."""
+    return pd.to_datetime(pd.Series(list(values), dtype=object), errors="coerce",
+                          utc=True, format="mixed").dropna()
+
+
 def age_days(values, now=None):
     """Whole days since the newest parseable timestamp in `values`, or None.
     ARG's occurredTime is normally UTC-aware, but a naive or mixed-offset value
@@ -85,8 +91,7 @@ def age_days(values, now=None):
     format="mixed" parses each value on its own terms - without it pandas infers
     ONE format from the first element and silently coerces the rest to NaT, which
     would drop the newest timestamp and understate the age."""
-    ts = pd.to_datetime(pd.Series(list(values), dtype=object), errors="coerce",
-                        utc=True, format="mixed").dropna()
+    ts = _utc_timestamps(values)
     if ts.empty:
         return None
     now = now if now is not None else pd.Timestamp.now(tz="UTC")
@@ -134,7 +139,7 @@ def _risk_band(has_preemption, preempt_age_days, churn_ops_per_day, price_capped
     if not has_preemption and churn_ops_per_day == 0 and not band_elevated:
         return "LOW", "No preemption, churn, or elevated eviction rate"
     score, reasons = 0, []
-    if rank >= 3:
+    if rank in (3, 4):
         score += 2
         reasons.append("high eviction-rate SKU (%s%%)" % eviction_band)
     elif rank == 2:
@@ -195,7 +200,7 @@ def snapshot_rows(eviction_df, pool_size_by_key):
         return []
     rows = []
     for (cid, pool), grp in eviction_df.groupby(["cluster_id", "pool_name"], sort=False):
-        times = pd.to_datetime(grp["occurred_time"], errors="coerce", utc=True).dropna()
+        times = _utc_timestamps(grp["occurred_time"])
         rows.append({
             "Subscription": grp["subscription"].iloc[0],
             "Cluster": grp["cluster_name"].iloc[0] or cid,
@@ -221,9 +226,12 @@ def churn_daily_rows(churn_df, days):
     df = df[df["date"].notna()]
     if df.empty:
         return []
+    # Pool names are only unique inside a cluster ("spot" is common), so count
+    # cluster/pool pairs rather than bare names in the fleet-wide daily roll-up.
+    df["pool_key"] = list(zip(df["cluster_id"], df["pool_name"]))
     agg = df.groupby("date").agg(ops=("timestamp", "size"),
                                  clusters=("cluster_id", "nunique"),
-                                 pools=("pool_name", "nunique")).reset_index()
+                                 pools=("pool_key", "nunique")).reset_index()
     agg = agg.sort_values("date")
     return [{"Date": str(r.date), "Churn Ops": int(r.ops),
              "Clusters Affected": int(r.clusters), "Pools Affected": int(r.pools)}
@@ -471,7 +479,11 @@ def scorecard_cards(risk_df, eviction_df, churn_df, spot_cluster_count,
     """KPI cards. Counts are POOL-level (risk_df is one row per spot pool) except
     the churn average, which is per spot cluster scanned - including the
     zero-churn ones, or the fleet average reads high."""
-    total_preemptions = int(eviction_df["instance_id"].nunique()) if not eviction_df.empty else 0
+    # VMSS instance IDs restart at zero for every scale set. A bare nunique()
+    # therefore undercounts the fleet whenever two pools both have instance "0".
+    instance_key = ["cluster_id", "vmss_name", "instance_id"]
+    total_preemptions = (len(eviction_df.drop_duplicates(subset=instance_key))
+                         if not eviction_df.empty else 0)
     avg_churn = (len(churn_df) / max(spot_cluster_count, 1) / max(days, 1)
                  if not churn_df.empty else 0.0)
     high_risk = int((risk_df["Risk Band"] == "HIGH").sum()) if not risk_df.empty else 0
