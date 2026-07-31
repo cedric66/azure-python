@@ -41,8 +41,39 @@ Workbook tabs include:
   by the candidate screening.
 
 This report still uses subscription-level data only. It cannot verify pod
-tolerations, priority-expander ConfigMaps, PDBs, or workload criticality without
-kubectl access.
+tolerations, priority-expander ConfigMaps, PDBs, or workload criticality — for
+that, have someone export the workloads and run
+[`workload-spot`](#workload-spot-readiness) over the bundle.
+
+## Workload spot readiness
+
+`workload-spot` is the workload-side half of the picture. Everything else here
+reads Azure at Reader scope and stops at the node pool; this one reads a
+directory of exported Kubernetes YAML and answers **why a workload fails on
+spot** — most often the singleton behind a zero-budget PDB — and **which
+on-demand workloads are safe to move**.
+
+It needs no cluster access at run time and no Azure scope. Someone with
+`kubectl get` runs `examples/export_workloads.sh` (read-only, no Secrets or
+ConfigMaps) and sends you the tarball:
+
+```bash
+uv run python aks_report.py workload-spot --bundle workloads/spot-export-prod-20260731.tar.gz
+uv run python aks_report.py workload-spot --bundle workloads/ --namespace team-a,team-b
+```
+
+Because `kubectl get -o yaml` includes the **status subresource**, the offline
+bundle still carries the live evidence: `PodDisruptionBudget.status.
+disruptionsAllowed`, `Pod.spec.nodeName`, restart counts and the scheduler's own
+`Unschedulable` message. Findings are tagged `spec` (true of the YAML anywhere)
+or `status` (observed in this cluster at export time).
+
+The two reports pair directly: `workload-spot` says *which workloads cannot
+survive a reclaim*, `spot-eviction` says *how often reclaims happen on the pools
+they run on*.
+
+Full rule catalog, verdicts and false-positive guidance:
+[docs/workload_spot_readiness.md](workload_spot_readiness.md).
 
 ## Spot eviction report
 

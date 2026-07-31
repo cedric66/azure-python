@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: PersistentVolumeClaim
+    metadata:
+      name: data-ledger-db-0
+      namespace: team-a
+      labels: {app: ledger-db}
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      storageClassName: managed-csi
+      resources:
+        requests: {storage: 64Gi}
+    status:
+      phase: Bound
+      accessModes: ["ReadWriteOnce"]

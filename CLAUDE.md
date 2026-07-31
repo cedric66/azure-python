@@ -76,7 +76,8 @@ reports/             report modules, categorized into subpackages (each: docstri
   estate/            fleet_inventory, cluster_360
   cost/              fleet_cost, cost_efficiency, optimization_report, tag_chargeback,
                      cluster_deepdive, utilization_idle
-  spot/              spot_cluster_report, spot_split_design, spot_savings, spot_eviction
+  spot/              spot_cluster_report, spot_split_design, spot_savings, spot_eviction,
+                     workload_spot_readiness (OFFLINE: reads exported k8s YAML, no Azure)
   security/          governance, conformance, policy_report, policy_components,
                      vulnerability_report
   lifecycle/         version_eol, container_os_eol, aks_lifecycle
@@ -84,6 +85,11 @@ reports/             report modules, categorized into subpackages (each: docstri
 examples/            *.example.* config/rule templates (sandbox, report_style,
                      teams, vulnerability_classification, subscriptions); the live
                      subscriptions.csv is a gitignored copy of subscriptions.example.csv
+examples/export_workloads.sh  READ-ONLY kubectl export (no mutating verbs, no
+                     Secrets/ConfigMaps) producing the workload-spot bundle; hand
+                     it to whoever has cluster access
+workloads/           gitignored drop zone for those bundles (live exports carry env
+                     vars/hostnames); sanitised copy in tests/fixtures/workloads/
 manifests/spot/descheduler.yaml  vendored pinned descheduler (Deployment; upstream has no DaemonSet)
 policies/tests/      sample violating/compliant pod manifests for k8s-test
 ```
@@ -120,6 +126,7 @@ the `module` column below is the bare filename.
 | spot-design | spot_split_design.py | ARG + retail prices |
 | spot-savings | spot_savings.py | Cost Mgmt + ARG + retail prices + Activity Log (node-RG eviction proxy) |
 | spot-eviction | spot_eviction.py | Azure Resource Health (healthresources: VirtualMachinePreempted), ARG (+ SpotResources banded eviction rates), Activity Log (node-RG VMSS churn), Retail Prices, opt-in Spot Placement Score API |
+| workload-spot | workload_spot_readiness.py | OFFLINE: a kubectl `get -o yaml` export bundle only (no Azure, no kubectl at run time); 23 rules SPOT-001..064 |
 | utilization | utilization_idle.py | ARG + Monitor (1 paced call/cluster) |
 | governance | governance.py | ARG only; CHECKS list of (id, desc, fn(c, pools)->(status, detail)) |
 | conformance | conformance.py | ARG only; rules built from a golden YAML (sandbox config schema, subset) via build_rules(); requires --golden |
@@ -438,6 +445,43 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   eviction count. It runs once per spot cluster (node RG) unless `--no-eviction-scan`.
   The smoke `ACTIVITY` fixture carries one Microsoft.Compute VMSS delete event so
   the column is exercised; `cluster_deepdive`'s `activity_events` ignores it.
+- `workload-spot` (workload_spot_readiness) is the ONLY report that reads
+  Kubernetes objects, and it does so OFFLINE - it never calls kubectl or Azure.
+  It therefore uses a plain `argparse.ArgumentParser` (not `subs.base_parser`)
+  and is imported in smoke_test but deliberately NOT in the `fake_connect` patch
+  tuple (same as `container_os_eol` / `vulnerability_report`). Input is a bundle
+  from `examples/export_workloads.sh`: a directory, a `.tar.gz`, or a single
+  multi-doc YAML. **The whole report rests on `kubectl get -o yaml` including the
+  STATUS subresource** - `PodDisruptionBudget.status.disruptionsAllowed`,
+  `Pod.spec.nodeName`, `restartCount`/`lastState.terminated`, the `PodScheduled`
+  condition. Every finding carries `based_on` = `spec` (true of the YAML
+  anywhere) or `status` (observed in THAT cluster at export time); do not add a
+  rule without deciding which it is. 23 rules (`SPOT-001`..`SPOT-064`, sparse by
+  design - gaps are reserved) each built by `_r(rid, sev, title, evidence, fix,
+  needs=)`; `SEVERITY_WEIGHT` = CRITICAL 5 / HIGH 3 / MEDIUM 1 / LOW 0 feeds an
+  ADDITIVE `risk_score` that only RANKS - the verdict comes from the WORST single
+  finding, so ten LOWs never outrank one CRITICAL. Six verdicts; a workload is
+  graded on the spot path when `w["tolerates_spot"] or w.get("targets_spot")` -
+  targeting spot via nodeSelector/affinity WITHOUT tolerating the taint means
+  permanently Pending, so it must be graded ON spot (BLOCKED), never offered as
+  an on-demand candidate (this exact bug shipped once). Traps that bit and must
+  stay fixed: (1) an EMPTY labelSelector `{}` matches EVERY pod - correct for a
+  PDB, catastrophic for workload->pod attribution, and CronJob/Job carry no
+  `spec.selector` at all, so `build_workloads` guards with `has_sel =
+  bool(sel.get("matchLabels") or sel.get("matchExpressions"))` before joining
+  pods (without it a CronJob absorbs its whole namespace); (2) numeric columns
+  like `pdb_disruptions_allowed` default to `None`, NOT `""` - a mixed str/""
+  column becomes object dtype and writes as TEXT, which Excel neither sorts nor
+  filters numerically, and it must also be listed in the `int_cols` tuple.
+  SPOT-002 (spread key `kubernetes.azure.com/scalesetpriority`) is the classic
+  app-team mistake already documented under spot-sim: that label exists only on
+  spot nodes so OD nodes form no topology domain - spread on
+  `kubernetes.azure.com/agentpool`. 7 tabs (ReadMe, Scorecard, WorkloadRisk,
+  Findings, RemediationGuide, NodeInventory, Coverage); `Coverage` distinguishes
+  MISSING files from RBAC-`SKIPPED` ones (`export_workloads.sh` writes a
+  `<file>.skipped` marker) because "there are none" and "we were not allowed to
+  look" have different analytical costs. `workloads/` is gitignored; the
+  sanitised 12-file fixture is `tests/fixtures/workloads/`.
 - Control-plane-only AKS upgrade = PUT the managed cluster WITHOUT
   `properties.agentPoolProfiles`; pools upgrade individually via agentPool
   `orchestratorVersion`. One minor hop at a time.

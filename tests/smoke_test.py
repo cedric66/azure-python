@@ -974,6 +974,9 @@ def main():
     from reports.spot import spot_cluster_report
     from reports.spot import spot_savings
     from reports.spot import spot_eviction
+    # Offline: reads a kubectl YAML bundle, takes no Azure session, so it is not
+    # in the fake_connect patch tuple below (same as container_os_eol).
+    from reports.spot import workload_spot_readiness
     from reports.platform import subscription_rearch
     from reports.cost import tag_chargeback
     from reports.cost import utilization_idle
@@ -1856,6 +1859,55 @@ def main():
     run(container_os_eol, ["--out", out],
         ["ReadMe", "Summary", "EolRadar", "OsBaseImages", "LanguageRuntimes",
          "RawLifecycle"], [chk_eol])
+
+    bundle = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "fixtures", "workloads")
+
+    def chk_workload_spot(wb):
+        ws = wb["WorkloadRisk"]
+        hdr = [ws.cell(row=1, column=j).value for j in range(1, ws.max_column + 1)]
+        rows = {}
+        for r in range(2, ws.max_row + 1):
+            row = dict(zip(hdr, [ws.cell(row=r, column=j).value
+                                 for j in range(1, ws.max_column + 1)]))
+            rows[row["name"]] = row
+        _expect(set(rows) >= {"payments-api", "ledger-db", "batch-shim", "search-web",
+                              "report-worker", "catalog-web", "nightly-reconcile"},
+                "workload-spot should score every workload in the bundle: %s" % sorted(rows))
+        pay = rows["payments-api"]
+        # The headline case: singleton + PDB minAvailable=1 -> disruptionsAllowed 0.
+        _expect(pay["verdict"] == "BLOCKED ON SPOT" and pay["pdb_disruptions_allowed"] == 0,
+                "singleton behind a zero-budget PDB must read BLOCKED ON SPOT: %s" % pay)
+        _expect("SPOT-010" in pay["rule_ids"] and "SPOT-011" in pay["rule_ids"],
+                "payments-api should cite the singleton + PDB-deadlock rules: %s"
+                % pay["rule_ids"])
+        # Targets spot without tolerating it: on the spot path already, so it must
+        # never be offered as an on-demand candidate.
+        shim = rows["batch-shim"]
+        _expect(shim["verdict"] != "KEEP ON DEMAND" and "SPOT-006" in shim["rule_ids"],
+                "a workload pinned to spot without a toleration is not an OD keeper: %s" % shim)
+        # An empty selector matches every pod; CronJob/Job have none, so an
+        # unguarded join used to hand them the whole namespace.
+        _expect(rows["nightly-reconcile"]["pods_observed"] == 0,
+                "CronJob with no spec.selector must not absorb the namespace's pods: %s"
+                % rows["nightly-reconcile"])
+        _expect(rows["catalog-web"]["verdict"] == "SPOT CANDIDATE",
+                "the clean spread/probe/preStop on-demand workload should be a "
+                "spot candidate: %s" % rows["catalog-web"])
+        # The classic mistake: spread key that only exists on spot nodes.
+        _expect("SPOT-002" in (rows["search-web"]["rule_ids"] or ""),
+                "scalesetpriority as a topologyKey must be flagged: %s"
+                % rows["search-web"]["rule_ids"])
+        cov = wb["Coverage"]
+        cvals = {cov.cell(row=r, column=j).value
+                 for r in range(2, cov.max_row + 1)
+                 for j in range(1, cov.max_column + 1)}
+        _expect("SKIPPED" in cvals and "MISSING" in cvals,
+                "Coverage must distinguish an RBAC-skipped file from an absent one")
+
+    run(workload_spot_readiness, ["--bundle", bundle, "--out", out],
+        ["ReadMe", "Scorecard", "WorkloadRisk", "Findings", "RemediationGuide",
+         "NodeInventory", "Coverage"], [chk_workload_spot])
 
     ga_month = (TODAY - dt.timedelta(days=200)).strftime("%b %Y")
     eol_month = (TODAY + dt.timedelta(days=300)).strftime("%b %Y")

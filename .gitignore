@@ -229,3 +229,10 @@ __marimo__/
 
 # Local subscription list (template lives in examples/subscriptions.example.csv)
 /subscriptions.csv
+
+# Workload YAML dumps pulled from live clusters (may carry env vars, internal
+# hostnames, registry paths). Sanitised fixtures live in tests/fixtures/workloads/.
+# Note: /workloads/* not /workloads/ - a trailing-slash ignore stops git descending,
+# so the README negation below would never be seen.
+/workloads/*
+!/workloads/README.md

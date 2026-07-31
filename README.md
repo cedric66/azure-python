@@ -40,6 +40,7 @@ Scope flags (`--all`, `--subs`, `--env`, `--nonprod`, `--cluster`,
 | [Report reference](docs/reports.md) | Every report: what it answers, data sources, and sample output fields |
 | [Sandbox & policy testing](docs/sandbox.md) | The `sandbox` family: deploy, kubectl, Gatekeeper tests, clone, impact, spot-sim, upgrade rehearsal, conformance, rearch |
 | [Spot reports & eviction testing](docs/spot.md) | Spot cost/savings/eviction reporting **and how to test `spot-eviction`** |
+| [Workload spot readiness](docs/workload_spot_readiness.md) | `workload-spot`: why a workload fails on spot (singleton/PDB deadlock) and which are safe to move — offline, from a `kubectl get -o yaml` export |
 | [Vulnerability report](docs/vulnerabilities.md) | Prisma/CVE enrichment + layer classification |
 | [Lifecycle & EOL radars](docs/lifecycle.md) | Public lifecycle data (endoflife.date, MS Learn, GitHub) — no Azure access |
 | [Output formats](docs/output-formats.md) | Workbook layout, charts, Markdown→DOCX/PDF, architecture-design companions |
@@ -56,7 +57,7 @@ Run any of these as `aks_report.py <key>` (aliases in
 
 - **Estate** — `inventory`, `360`
 - **Cost** — `cost`, `deepdive`, `efficiency`, `optimization`, `utilization`, `tags`
-- **Spot** — `spot`, `spot-design`, `spot-savings`, `spot-eviction`
+- **Spot** — `spot`, `spot-design`, `spot-savings`, `spot-eviction`, `workload-spot`
 - **Security & policy** — `governance`, `conformance`, `policy`, `policy-components`, `vulnerabilities`
 - **Lifecycle** — `version`, `container-eol`, `aks-lifecycle`
 - **Platform** — `design`, `network`, `rearch`
@@ -72,6 +73,7 @@ reports/<category>/    report modules: estate, cost, spot, security, lifecycle, 
 examples/              *.example.* config/rule templates (incl. subscriptions.example.csv)
 manifests/, policies/  vendored descheduler + sample policy test manifests
 docs/                  this documentation
+workloads/             drop zone for exported workload YAML (gitignored; see its README)
 out/                   generated .xlsx (gitignored)
 ```
 

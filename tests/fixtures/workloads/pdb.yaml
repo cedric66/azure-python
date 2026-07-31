@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: List
+items:
+  # THE deadlock: 1 replica, minAvailable 1 -> disruptionsAllowed 0. Blocks drain,
+  # descheduler and autoscaler consolidation; protects nothing against preemption.
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: payments-api
+      namespace: team-a
+    spec:
+      minAvailable: 1
+      selector:
+        matchLabels: {app: payments-api}
+    status:
+      currentHealthy: 1
+      desiredHealthy: 1
+      expectedPods: 1
+      disruptionsAllowed: 0
+      observedGeneration: 1
+  # Healthy PDB on a multi-replica workload.
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: search-web
+      namespace: team-a
+    spec:
+      maxUnavailable: 1
+      selector:
+        matchLabels: {app: search-web}
+    status:
+      currentHealthy: 4
+      desiredHealthy: 3
+      expectedPods: 4
+      disruptionsAllowed: 1
+      observedGeneration: 1
+  # Orphan: selector matches no workload in the bundle (renamed app label).
+  - apiVersion: policy/v1
+    kind: PodDisruptionBudget
+    metadata:
+      name: legacy-gateway
+      namespace: team-b
+    spec:
+      minAvailable: 2
+      selector:
+        matchLabels: {app: legacy-gateway}
+    status:
+      currentHealthy: 0
+      desiredHealthy: 2
+      expectedPods: 0
+      disruptionsAllowed: 0
+      observedGeneration: 1

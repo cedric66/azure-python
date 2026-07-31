@@ -1,0 +1,147 @@
+apiVersion: v1
+kind: List
+items:
+  # The headline case: a single replica tolerating spot, protected by a PDB that
+  # allows zero disruptions, with a grace period longer than the eviction notice.
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: payments-api
+      namespace: team-a
+      labels: {app: payments-api}
+    spec:
+      replicas: 1
+      strategy: {type: Recreate}
+      selector:
+        matchLabels: {app: payments-api}
+      template:
+        metadata:
+          labels: {app: payments-api}
+        spec:
+          terminationGracePeriodSeconds: 120
+          tolerations:
+            - key: kubernetes.azure.com/scalesetpriority
+              operator: Equal
+              value: spot
+              effect: NoSchedule
+          containers:
+            - name: api
+              image: registry.example.com/payments-api:1.4.2
+              ports: [{containerPort: 8080}]
+  # The documented org mistake: spreading on a label that exists only on spot nodes.
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: search-web
+      namespace: team-a
+      labels: {app: search-web}
+    spec:
+      replicas: 4
+      selector:
+        matchLabels: {app: search-web}
+      template:
+        metadata:
+          labels: {app: search-web}
+        spec:
+          tolerations:
+            - key: kubernetes.azure.com/scalesetpriority
+              operator: Exists
+              effect: NoSchedule
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.azure.com/scalesetpriority
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels: {app: search-web}
+          containers:
+            - name: web
+              image: registry.example.com/search-web:2.0.0
+              readinessProbe:
+                httpGet: {path: /healthz, port: 8080}
+  # Pinned to spot capacity with no toleration: permanently Pending.
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: batch-shim
+      namespace: team-b
+      labels: {app: batch-shim}
+    spec:
+      replicas: 2
+      selector:
+        matchLabels: {app: batch-shim}
+      template:
+        metadata:
+          labels: {app: batch-shim}
+        spec:
+          nodeSelector:
+            kubernetes.azure.com/scalesetpriority: spot
+          containers:
+            - name: shim
+              image: registry.example.com/batch-shim:0.9.1
+  # Clean on-demand workload: should read as a SPOT CANDIDATE.
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: catalog-web
+      namespace: team-b
+      labels: {app: catalog-web}
+    spec:
+      replicas: 3
+      selector:
+        matchLabels: {app: catalog-web}
+      template:
+        metadata:
+          labels: {app: catalog-web}
+        spec:
+          terminationGracePeriodSeconds: 20
+          priorityClassName: business-critical
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.azure.com/agentpool
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels: {app: catalog-web}
+          containers:
+            - name: web
+              image: registry.example.com/catalog-web:3.1.0
+              readinessProbe:
+                httpGet: {path: /ready, port: 8080}
+              lifecycle:
+                preStop:
+                  exec: {command: ["sleep", "5"]}
+  # replicas=1 but HPA-managed with minReplicas=2: must NOT read as a singleton.
+  - apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: report-worker
+      namespace: team-b
+      labels: {app: report-worker}
+    spec:
+      replicas: 1
+      selector:
+        matchLabels: {app: report-worker}
+      template:
+        metadata:
+          labels: {app: report-worker}
+        spec:
+          terminationGracePeriodSeconds: 25
+          priorityClassName: batch
+          tolerations:
+            - key: kubernetes.azure.com/scalesetpriority
+              operator: Equal
+              value: spot
+              effect: NoSchedule
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.azure.com/agentpool
+              whenUnsatisfiable: ScheduleAnyway
+              labelSelector:
+                matchLabels: {app: report-worker}
+          containers:
+            - name: worker
+              image: registry.example.com/report-worker:1.0.0
+              readinessProbe:
+                exec: {command: ["true"]}
+              lifecycle:
+                preStop:
+                  exec: {command: ["sleep", "5"]}

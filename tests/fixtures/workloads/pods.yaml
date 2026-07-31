@@ -1,0 +1,146 @@
+apiVersion: v1
+kind: List
+items:
+  # The singleton, actually running on a spot node, with a restart history whose
+  # last termination reason is consistent with node reclaim.
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: payments-api-7c9f4d8b6-2xk4n
+      namespace: team-a
+      labels: {app: payments-api, pod-template-hash: 7c9f4d8b6}
+    spec:
+      nodeName: aks-spot1-31415926-vmss000000
+    status:
+      phase: Running
+      containerStatuses:
+        - name: api
+          restartCount: 7
+          lastState:
+            terminated:
+              reason: Error
+              exitCode: 137
+              finishedAt: "2026-07-30T22:14:03Z"
+  # All four search-web replicas landed on the same spot pool despite the spread
+  # constraint - because the spread key only exists on spot nodes.
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: search-web-5d7b9c4f8-aaaaa
+      namespace: team-a
+      labels: {app: search-web, pod-template-hash: 5d7b9c4f8}
+    spec: {nodeName: aks-spot1-31415926-vmss000000}
+    status: {phase: Running}
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: search-web-5d7b9c4f8-bbbbb
+      namespace: team-a
+      labels: {app: search-web, pod-template-hash: 5d7b9c4f8}
+    spec: {nodeName: aks-spot1-31415926-vmss000000}
+    status: {phase: Running}
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: search-web-5d7b9c4f8-ccccc
+      namespace: team-a
+      labels: {app: search-web, pod-template-hash: 5d7b9c4f8}
+    spec: {nodeName: aks-spot1-31415926-vmss000001}
+    status: {phase: Running}
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: search-web-5d7b9c4f8-ddddd
+      namespace: team-a
+      labels: {app: search-web, pod-template-hash: 5d7b9c4f8}
+    spec: {nodeName: aks-spot1-31415926-vmss000001}
+    status: {phase: Running}
+  # Pinned to spot with no toleration -> unschedulable forever.
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: batch-shim-6f8d5c9b7-11111
+      namespace: team-b
+      labels: {app: batch-shim, pod-template-hash: 6f8d5c9b7}
+    spec: {}
+    status:
+      phase: Pending
+      conditions:
+        - type: PodScheduled
+          status: "False"
+          reason: Unschedulable
+          message: "0/5 nodes are available: 2 node(s) had untolerated taint {kubernetes.azure.com/scalesetpriority: spot}, 3 node(s) didn't match Pod's node affinity/selector."
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: batch-shim-6f8d5c9b7-22222
+      namespace: team-b
+      labels: {app: batch-shim, pod-template-hash: 6f8d5c9b7}
+    spec: {}
+    status:
+      phase: Pending
+      conditions:
+        - type: PodScheduled
+          status: "False"
+          reason: Unschedulable
+          message: "0/5 nodes are available: 2 node(s) had untolerated taint {kubernetes.azure.com/scalesetpriority: spot}, 3 node(s) didn't match Pod's node affinity/selector."
+  # Healthy on-demand workload, spread across two on-demand nodes.
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: catalog-web-84c6b7d95-aaaaa
+      namespace: team-b
+      labels: {app: catalog-web, pod-template-hash: 84c6b7d95}
+    spec: {nodeName: aks-user1-27182818-vmss000000}
+    status: {phase: Running}
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: catalog-web-84c6b7d95-bbbbb
+      namespace: team-b
+      labels: {app: catalog-web, pod-template-hash: 84c6b7d95}
+    spec: {nodeName: aks-user1-27182818-vmss000001}
+    status: {phase: Running}
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: catalog-web-84c6b7d95-ccccc
+      namespace: team-b
+      labels: {app: catalog-web, pod-template-hash: 84c6b7d95}
+    spec: {nodeName: aks-user1-27182818-vmss000000}
+    status: {phase: Running}
+  # HPA-managed worker, currently at its floor of 2, both on spot.
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: report-worker-59b7c8d64-aaaaa
+      namespace: team-b
+      labels: {app: report-worker, pod-template-hash: 59b7c8d64}
+    spec: {nodeName: aks-spot1-31415926-vmss000000}
+    status: {phase: Running}
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: report-worker-59b7c8d64-bbbbb
+      namespace: team-b
+      labels: {app: report-worker, pod-template-hash: 59b7c8d64}
+    spec: {nodeName: aks-spot1-31415926-vmss000001}
+    status: {phase: Running}
+  # Stateful singleton on spot with a RWO disk attached.
+  - apiVersion: v1
+    kind: Pod
+    metadata:
+      name: ledger-db-0
+      namespace: team-a
+      labels: {app: ledger-db}
+    spec: {nodeName: aks-spot1-31415926-vmss000001}
+    status:
+      phase: Running
+      containerStatuses:
+        - name: db
+          restartCount: 3
+          lastState:
+            terminated:
+              reason: Error
+              exitCode: 137
+              finishedAt: "2026-07-29T03:41:55Z"

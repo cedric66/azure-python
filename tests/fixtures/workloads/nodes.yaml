@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: List
+items:
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: aks-spot1-31415926-vmss000000
+      labels:
+        agentpool: spot1
+        kubernetes.azure.com/agentpool: spot1
+        kubernetes.azure.com/scalesetpriority: spot
+        node.kubernetes.io/instance-type: Standard_D8s_v5
+        topology.kubernetes.io/zone: westeurope-1
+    spec:
+      taints:
+        - key: kubernetes.azure.com/scalesetpriority
+          value: spot
+          effect: NoSchedule
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: aks-spot1-31415926-vmss000001
+      labels:
+        agentpool: spot1
+        kubernetes.azure.com/agentpool: spot1
+        kubernetes.azure.com/scalesetpriority: spot
+        node.kubernetes.io/instance-type: Standard_D8s_v5
+        topology.kubernetes.io/zone: westeurope-1
+    spec:
+      taints:
+        - key: kubernetes.azure.com/scalesetpriority
+          value: spot
+          effect: NoSchedule
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: aks-user1-27182818-vmss000000
+      labels:
+        agentpool: user1
+        kubernetes.azure.com/agentpool: user1
+        node.kubernetes.io/instance-type: Standard_D4s_v5
+        topology.kubernetes.io/zone: westeurope-1
+    spec: {}
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: aks-user1-27182818-vmss000001
+      labels:
+        agentpool: user1
+        kubernetes.azure.com/agentpool: user1
+        node.kubernetes.io/instance-type: Standard_D4s_v5
+        topology.kubernetes.io/zone: westeurope-2
+    spec: {}
+  - apiVersion: v1
+    kind: Node
+    metadata:
+      name: aks-system-16180339-vmss000000
+      labels:
+        agentpool: system
+        kubernetes.azure.com/agentpool: system
+        node.kubernetes.io/instance-type: Standard_D4s_v5
+        topology.kubernetes.io/zone: westeurope-3
+    spec:
+      taints:
+        - key: CriticalAddonsOnly
+          value: "true"
+          effect: NoSchedule

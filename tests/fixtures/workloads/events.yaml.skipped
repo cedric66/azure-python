@@ -1,0 +1,1 @@
+Error from server (Forbidden): events is forbidden: User "app-team-reader" cannot list resource "events" in API group "" at the cluster scope

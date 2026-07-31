@@ -101,6 +101,14 @@ REPORTS = [
                        "(Resource Health + Activity Log).",
     },
     {
+        "key": "workload-spot",
+        "aliases": ("workload", "spot-readiness", "yaml"),
+        "module": "reports.spot.workload_spot_readiness",
+        "title": "Workload spot readiness",
+        "description": "Offline analysis of a kubectl YAML export: why a workload fails on "
+                       "spot (singleton/PDB deadlock) and which are safe to move.",
+    },
+    {
         "key": "utilization",
         "aliases": ("util", "idle"),
         "module": "reports.cost.utilization_idle",

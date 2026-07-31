@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: List
+items:
+  # backoffLimit: 0 on spot - one preemption and the job is failed, not retried.
+  - apiVersion: batch/v1
+    kind: CronJob
+    metadata:
+      name: nightly-reconcile
+      namespace: team-b
+      labels: {app: nightly-reconcile}
+    spec:
+      schedule: "0 2 * * *"
+      jobTemplate:
+        spec:
+          backoffLimit: 0
+          template:
+            metadata:
+              labels: {app: nightly-reconcile}
+            spec:
+              restartPolicy: Never
+              tolerations:
+                - key: kubernetes.azure.com/scalesetpriority
+                  operator: Equal
+                  value: spot
+                  effect: NoSchedule
+              containers:
+                - name: reconcile
+                  image: registry.example.com/reconcile:1.2.0
