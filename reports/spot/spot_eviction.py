@@ -9,16 +9,18 @@ Layered report combining two Reader-scope signals:
    eviction also possible; None/non-spot = n/a)
 
 4. SOLUTION: SpotResources (ARG) banded eviction rate per SKU/region -> same-size
-   in-region SKUs with a lower band (SkuAlternatives); optional Spot Placement Score
-   API (--placement-score, preview) for a forward-looking High/Med/Low confirmation.
+   in-region SKUs with a lower band (the swap-candidate columns); optional Spot
+   Placement Score API (--placement-score, preview) for a forward-looking
+   High/Med/Low confirmation.
 
 The SpotResources band is also a RISK input, not just a solution one: the health
 snapshot is ephemeral, so a pool parked on a 15-20/20+ SKU reads as risky even
 when no annotation is currently live.
 
-Story tabs: ReadMe, Scorecard (KPI cards), RiskAssessment, SkuAlternatives,
-EvictionSnapshot, ChurnTrend, RemediationGuide. Then reference: SpotPoolInventory,
-EvictionRates, RawHealthResources, RawActivityLog, Limitations.
+Tabs: ReadMe (method + limitations), Scorecard (KPI cards), SpotPoolRisk (the
+report: one row per spot pool - config, both observed signals, the SKU eviction
+band, the verdict and the swap candidate), ChurnTrend, RemediationGuide, then
+reference EvictionRates and RawEvidence.
 
 Usage:
   python aks_report.py spot-eviction --all
@@ -131,7 +133,7 @@ def _risk_band(has_preemption, preempt_age_days, churn_ops_per_day, price_capped
 
     Drivers (preemption, churn, an elevated SKU eviction band) decide whether a
     pool is scored at all; prod/price-cap/single-zone are modifiers on top. Note
-    the asymmetry with band_rank's use in sku_alternative_rows: there an unknown
+    the asymmetry with band_rank's use in best_alternative: there an unknown
     band ranks WORST (never recommend what we cannot read), here it scores ZERO
     (a data gap is not evidence of risk)."""
     rank = band_rank(eviction_band)
@@ -193,32 +195,29 @@ def eviction_rows(health_rows, rg_map):
     return rows
 
 
-def snapshot_rows(eviction_df, pool_size_by_key):
-    """Per cluster/pool roll-up of the live preemption snapshot (the raw
-    annotation dump stays on RawHealthResources)."""
+def preemption_by_pool(eviction_df):
+    """(cluster_id, pool) -> roll-up of the live preemption snapshot. Folded into
+    the SpotPoolRisk row for that pool; the raw annotations stay on RawEvidence.
+    Instance IDs restart at 0 per scale set, so count within the VMSS."""
+    out = {}
     if eviction_df.empty:
-        return []
-    rows = []
+        return out
     for (cid, pool), grp in eviction_df.groupby(["cluster_id", "pool_name"], sort=False):
         times = _utc_timestamps(grp["occurred_time"])
-        rows.append({
-            "Subscription": grp["subscription"].iloc[0],
-            "Cluster": grp["cluster_name"].iloc[0] or cid,
-            "Pool": pool,
-            "VM Size": pool_size_by_key.get((cid, pool), ""),
-            "Preempted Instances": int(grp["instance_id"].nunique()),
+        out[(cid, pool)] = {
+            "Preempted Instances": int(grp.drop_duplicates(
+                subset=["vmss_name", "instance_id"]).shape[0]),
             "First Seen": times.min().strftime("%Y-%m-%d %H:%M") if not times.empty else "",
             "Last Seen": times.max().strftime("%Y-%m-%d %H:%M") if not times.empty else "",
-            "Age (days)": age_days(grp["occurred_time"]) if not times.empty else "",
+            "Age (days)": age_days(grp["occurred_time"]) if not times.empty else None,
             "Contexts": ", ".join(sorted({str(v) for v in grp["annotation_context"] if v})),
-        })
-    rows.sort(key=lambda r: -r["Preempted Instances"])
-    return rows
+        }
+    return out
 
 
 def churn_daily_rows(churn_df, days):
     """Fleet-wide daily VMSS churn (the ChurnTrend series). Per-pool rates live
-    on RiskAssessment; a per-cluster pivot would be unusable at fleet width."""
+    on SpotPoolRisk; a per-cluster pivot would be unusable at fleet width."""
     if churn_df.empty:
         return []
     df = churn_df.copy()
@@ -251,152 +250,159 @@ def pool_churn_rates(churn_df, days):
     return rates
 
 
-def risk_rows(clusters, pools_by_cluster, eviction_df, churn_rates, eviction_rate,
-              days):
-    """One row per spot pool: both observed signals, the durable SKU eviction
-    band, the bidding mode and an additive HIGH/MED/LOW band."""
+ALT_EMPTY = {"Recommended SKU": "", "Recommended Band %": "", "Arch Note": "",
+             "Price Delta $/hr": "", "Placement Score": "", "SKU Swap Status": "",
+             "verify_before_move": ""}
+
+
+def best_alternative(vm_size, region, by_region, cur_band, placement_by_region,
+                     currency):
+    """Best same-vCPU/mem in-region SKU with a strictly LOWER eviction band, as the
+    swap-candidate half of a SpotPoolRisk row. Candidates come from the region's own
+    SpotResources rows (so they are region-available) filtered to matching
+    capabilities in the static _SKU_CAP map; ARM64 is surfaced with an Arch Note but
+    never silently preferred. Retail price delta is best-effort. This SCREENS - it
+    does not plan the migration (spot priority is immutable, so a swap means a new
+    pool + drain), hence verify_before_move on every candidate."""
+    cur_key = (vm_size or "").strip().lower()
+    cur_cap = sku_capabilities(vm_size)
+    if not cur_cap:
+        return dict(ALT_EMPTY, **{
+            "SKU Swap Status": "SKU not in capability map - verify manually",
+            "verify_before_move": "Confirm SKU specs + regional availability by hand"})
+    candidates = []
+    for sku_key, band in by_region.get(region, {}).items():
+        if sku_key == cur_key:
+            continue
+        cap = sku_capabilities(sku_key)
+        if not cap:
+            continue
+        if cap["vcpu"] != cur_cap["vcpu"] or cap["mem"] != cur_cap["mem"]:
+            continue
+        if band_rank(band) >= band_rank(cur_band):
+            continue  # not strictly safer than current
+        candidates.append((band_rank(band), sku_key, band, cap))
+    if not candidates:
+        return dict(ALT_EMPTY, **{
+            "SKU Swap Status": "No lower-eviction alternative in region"
+            if cur_band is not None else "Eviction rate data unavailable"})
+    candidates.sort(key=lambda t: t[0])  # safest band first
+    _, best_key, best_band, best_cap = candidates[0]
+    best_sku = azure_sku(best_key)
+    cur_od = (retail_vm_prices(region, vm_size, currency) or {}).get("od_hr")
+    new_od = (retail_vm_prices(region, best_sku, currency) or {}).get("od_hr")
+    return {
+        "Recommended SKU": best_sku,
+        "Recommended Band %": best_band,
+        "Arch Note": ("needs multi-arch images (ARM64)"
+                      if best_cap["arch"] != cur_cap["arch"] else ""),
+        "Price Delta $/hr": (round(new_od - cur_od, 4)
+                             if cur_od is not None and new_od is not None else ""),
+        "Placement Score": placement_by_region.get((region, best_key), ""),
+        "SKU Swap Status": "SWAP CANDIDATE",
+        "verify_before_move": "Spot priority is immutable: create new pool + "
+                              "drain; re-verify quota/availability/price",
+    }
+
+
+def pool_rows(clusters, pools_by_cluster, preempt_by_pool, churn_rates,
+              eviction_rate, placement_by_region, currency):
+    """THE report table: one row per spot pool, left to right - identity, config,
+    both observed signals, the durable SKU eviction band, the verdict, then the
+    swap candidate. Replaces what used to be four separate tabs on the same key."""
+    by_region = defaultdict(dict)  # region -> {sku_key: band}
+    for (sku_key, region), band in eviction_rate.items():
+        by_region[region][sku_key] = band
     rows = []
     for c in clusters:
         cid = c["id"].lower()
         spot_pools = pools_by_cluster.get(cid, [])
         if not spot_pools:
             continue
-        parsed_pools = {p["pool"].lower() for p in spot_pools}
+        parsed_pools = {str(p["pool"]).lower() for p in spot_pools}
         # churn we could not tie to a pool is cluster-level context, shown in its
         # own column so it is never silently added onto every pool's rate
         unattributed = sum(v for (k_cid, k_pool), v in churn_rates.items()
                            if k_cid == cid and k_pool not in parsed_pools)
         for pool in spot_pools:
             pool_key = str(pool["pool"]).lower()
-            preempt = eviction_df[(eviction_df["cluster_id"] == cid) &
-                                  (eviction_df["pool_name"] == pool_key)]
-            preempt_count = int(preempt["instance_id"].nunique()) if not preempt.empty else 0
-            preempt_age = age_days(preempt["occurred_time"]) if preempt_count else None
+            snap = preempt_by_pool.get((cid, pool_key), {})
+            preempt_count = int(snap.get("Preempted Instances", 0) or 0)
+            preempt_age = snap.get("Age (days)") if preempt_count else None
 
             churn = churn_rates.get((cid, pool_key), 0.0)
             price_cap = pool.get("spot_max_price")
             price_capped = price_cap is not None and price_cap > 0
             price_cap_label = "Capacity-only" if price_cap == -1 else (
                 "Price-capped (%.2f)" % price_cap if price_capped else "N/A")
+            vm_size = pool.get("vm_size", "")
             region = str(pool.get("location", "")).lower()
-            evband = eviction_rate.get((str(pool.get("vm_size", "")).strip().lower(), region))
+            evband = eviction_rate.get((str(vm_size).strip().lower(), region))
             zones = zone_count(pool)
 
             band, reason = _risk_band(preempt_count > 0, preempt_age, churn,
                                      price_capped, is_prod(c["environment"]),
                                      eviction_band=evband, zones=zones)
-            rows.append({
+            rows.append(dict({
+                "Subscription": c["subscription"],
                 "Cluster": c["cluster"],
                 "Pool": pool["pool"],
                 "Environment": c["environment"],
-                "VM Size": pool.get("vm_size", ""),
                 "Region": region,
+                "VM Size": vm_size,
                 "Nodes": pool.get("count", 0),
                 "Zones": zones,
+                "Eviction Policy": pool.get("eviction_policy", ""),
+                "Spot Max Price": price_cap if price_cap is not None else "",
+                "Capacity/Bidding": price_cap_label,
                 "Eviction Band %": evband if evband is not None else "(no data)",
                 "Preemptions": preempt_count,
+                "Last Preemption": snap.get("Last Seen", ""),
                 "Preemption Age (days)": preempt_age if preempt_age is not None else "",
                 "Churn (ops/day)": round(churn, 2),
                 "Cluster Churn Unattributed (ops/day)": round(unattributed, 2),
-                "Spot Max Price": price_cap if price_cap is not None else "",
-                "Capacity/Bidding": price_cap_label,
                 "Risk Band": band,
                 "Risk Reason": reason,
-            })
+            }, **best_alternative(vm_size, region, by_region, evband,
+                                  placement_by_region, currency)))
     return rows
 
 
-def inventory_rows(clusters, pools_by_cluster):
+def raw_evidence_rows(eviction_df, churn_df):
+    """Both raw signals in one reference tab, tagged by Source. They answer the
+    same question ("what happened to this node?") at the same grain, so a reader
+    chasing one pool should not have to join two sheets by hand."""
     rows = []
-    for c in clusters:
-        for pool in pools_by_cluster.get(c["id"].lower(), []):
+    if not eviction_df.empty:
+        for r in eviction_df.to_dict("records"):
+            detail = "; ".join(str(v) for v in (r.get("annotation_context"),
+                                                r.get("annotation_category"),
+                                                r.get("annotation_summary")) if v)
             rows.append({
-                "Cluster": c["cluster"],
-                "Pool": pool["pool"],
-                "Spot Max Price": pool.get("spot_max_price", ""),
-                "Node Count": pool.get("count", 0),
-                "VM Size": pool.get("vm_size", ""),
-                "Zones": pool.get("zones", ""),
-                "Eviction Policy": pool.get("eviction_policy", ""),
-                "Priority": pool.get("priority", ""),
+                "Source": "Resource Health",
+                "Subscription": r.get("subscription", ""),
+                "Cluster": r.get("cluster_name", "") or r.get("cluster_id", ""),
+                "Pool": r.get("pool_name", ""),
+                "Timestamp": r.get("occurred_time", ""),
+                "Resource": r.get("vmss_name", ""),
+                "Instance": r.get("instance_id", ""),
+                "Event": "VirtualMachinePreempted",
+                "Detail": detail,
             })
-    return rows
-
-
-def sku_alternative_rows(clusters, pools_by_cluster, eviction_rate,
-                         placement_by_region, currency):
-    """One row per spot pool: its current SKU eviction band and the best
-    same-vCPU/mem in-region SKU with a strictly lower band. Candidates come from
-    the region's own SpotResources rows (so they are region-available) filtered to
-    matching capabilities in the static _SKU_CAP map; ARM64 is surfaced but flagged
-    'needs multi-arch images', never silently preferred. Retail price delta is
-    best-effort. Every row carries verify_before_move - this screens, it does not
-    plan the migration (spot priority is immutable so a swap = new pool + drain)."""
-    rows = []
-    # index the eviction table by region -> {sku_key: band}
-    by_region = defaultdict(dict)
-    for (sku_key, region), band in eviction_rate.items():
-        by_region[region][sku_key] = band
-    for c in clusters:
-        cid = c["id"].lower()
-        for pool in pools_by_cluster.get(cid, []):
-            vm_size = pool.get("vm_size", "")
-            region = str(pool.get("location", "")).lower()
-            cur_key = (vm_size or "").strip().lower()
-            cur_cap = sku_capabilities(vm_size)
-            cur_band = eviction_rate.get((cur_key, region))
-            base = {"Cluster": c["cluster"], "Pool": pool["pool"],
-                    "Region": region, "Current SKU": vm_size,
-                    "Current Band %": cur_band if cur_band is not None else "(no data)",
-                    "Nodes": pool.get("count", 0)}
-            if not cur_cap:
-                rows.append(dict(base, **{
-                    "Recommended SKU": "", "Recommended Band %": "",
-                    "Arch Note": "", "Price Delta $/hr": "",
-                    "Placement Score": "", "Status": "SKU not in capability map - verify manually",
-                    "verify_before_move": "Confirm SKU specs + regional availability by hand"}))
-                continue
-            candidates = []
-            for sku_key, band in by_region.get(region, {}).items():
-                if sku_key == cur_key:
-                    continue
-                cap = sku_capabilities(sku_key)
-                if not cap:
-                    continue
-                if cap["vcpu"] != cur_cap["vcpu"] or cap["mem"] != cur_cap["mem"]:
-                    continue
-                if band_rank(band) >= band_rank(cur_band):
-                    continue  # not strictly safer than current
-                candidates.append((band_rank(band), sku_key, band, cap))
-            if not candidates:
-                rows.append(dict(base, **{
-                    "Recommended SKU": "", "Recommended Band %": "",
-                    "Arch Note": "", "Price Delta $/hr": "",
-                    "Placement Score": "", "Status": "No lower-eviction alternative in region"
-                    if cur_band is not None else "Eviction rate data unavailable",
-                    "verify_before_move": ""}))
-                continue
-            candidates.sort(key=lambda t: t[0])  # safest band first
-            best_rank, best_key, best_band, best_cap = candidates[0]
-            best_sku = azure_sku(best_key)
-            arch_note = ("needs multi-arch images (ARM64)"
-                         if best_cap["arch"] != cur_cap["arch"] else "")
-            cur_price = retail_vm_prices(region, vm_size, currency) or {}
-            new_price = retail_vm_prices(region, best_sku, currency) or {}
-            cur_od = cur_price.get("od_hr")
-            new_od = new_price.get("od_hr")
-            delta = (round(new_od - cur_od, 4)
-                     if cur_od is not None and new_od is not None else "")
-            score = placement_by_region.get((region, best_key), "")
-            rows.append(dict(base, **{
-                "Recommended SKU": best_sku,
-                "Recommended Band %": best_band,
-                "Arch Note": arch_note,
-                "Price Delta $/hr": delta,
-                "Placement Score": score,
-                "Status": "SWAP CANDIDATE",
-                "verify_before_move": "Spot priority is immutable: create new pool + "
-                                     "drain; re-verify quota/availability/price"}))
+    if not churn_df.empty:
+        for r in churn_df.to_dict("records"):
+            rows.append({
+                "Source": "Activity Log",
+                "Subscription": r.get("subscription", ""),
+                "Cluster": r.get("cluster", ""),
+                "Pool": r.get("pool_name", ""),
+                "Timestamp": r.get("timestamp", ""),
+                "Resource": r.get("resource", ""),
+                "Instance": "",
+                "Event": r.get("operation", ""),
+                "Detail": r.get("status", ""),
+            })
+    rows.sort(key=lambda r: str(r["Timestamp"]), reverse=True)
     return rows
 
 
@@ -422,7 +428,8 @@ REMEDIATION = [
     },
     {
         "Strategy": "Lower-Eviction SKU Swap",
-        "Trigger": "SkuAlternatives shows a same-size in-region SKU in a lower band",
+        "Trigger": "SpotPoolRisk shows a SWAP CANDIDATE (same-size in-region SKU, "
+                  "lower eviction band)",
         "Actions": "1) Confirm the candidate SKU's quota + zone availability; "
                   "2) Create a NEW spot pool on it (priority is immutable); "
                   "3) Cordon/drain the old pool, then delete it",
@@ -604,7 +611,7 @@ def main(argv=None):
     in_scope_regions = {str(p.get("location", "")).lower()
                         for ps in pools_by_cluster.values() for p in ps}
     in_scope_regions.discard("")
-    eviction_rate, evrate_rows = {}, []
+    eviction_rate, evrate_rows, evrate_note = {}, [], ""
     if in_scope_regions:
         raw_evrate = arg.query(session, arg.SPOT_EVICTION_RATE_KQL, list(sub_ids))
         for r in raw_evrate:
@@ -620,9 +627,23 @@ def main(argv=None):
             "(%d spot-pool region(s) in scope: %s)"
             % (len(raw_evrate), len(evrate_rows), len(in_scope_regions),
                ", ".join(sorted(in_scope_regions))))
+        if not raw_evrate:
+            evrate_note = ("ARG returned 0 rows for the SpotResources table. It is not "
+                          "surfaced in every tenant/cloud. Isolate with: az graph query "
+                          "-q \"SpotResources | where type =~ "
+                          "'microsoft.compute/skuspotevictionrate/location' | limit 5\"")
+        elif not evrate_rows:
+            evrate_note = ("ARG returned %d SpotResources row(s) but none for a region "
+                          "holding a spot node pool (in scope: %s). Nothing to report; "
+                          "the fleet's spot pools live elsewhere."
+                          % (len(raw_evrate), ", ".join(sorted(in_scope_regions))))
     else:
-        log("No spot node pools in scope - skipping the SpotResources query "
-            "(unfiltered it would return every SKU in every region).")
+        evrate_note = ("No spot node pool in scope, so the SpotResources query was "
+                      "skipped (unfiltered it returns every SKU in every region). Note "
+                      "RawEvidence can still show preemptions: that query is fleet-wide "
+                      "and also catches non-AKS spot VMs and pools that no longer exist "
+                      "- those rows read as cluster '(unmatched)'.")
+        log(evrate_note)
 
     placement_by_region = {}
     if args.placement_score:
@@ -650,45 +671,44 @@ def main(argv=None):
                 if prev is None or _score_rank(cur) < _score_rank(prev):
                     placement_by_region[key] = cur
 
-    risk_cols = ["Cluster", "Pool", "Environment", "VM Size", "Region", "Nodes", "Zones",
-                 "Eviction Band %", "Preemptions", "Preemption Age (days)",
-                 "Churn (ops/day)", "Cluster Churn Unattributed (ops/day)",
-                 "Spot Max Price", "Capacity/Bidding", "Risk Band", "Risk Reason"]
-    risk_df = pd.DataFrame(risk_rows(clusters, pools_by_cluster, eviction_df,
-                                     churn_rates, eviction_rate, args.days) or None,
-                           columns=risk_cols)
+    # One row per spot pool: config, both observed signals, the durable eviction
+    # band, the verdict and the swap candidate. These were four tabs on the same
+    # key (cluster_id, pool) and forced the reader to join them by hand.
+    pool_cols = ["Subscription", "Cluster", "Pool", "Environment", "Region", "VM Size",
+                 "Nodes", "Zones", "Eviction Policy", "Spot Max Price",
+                 "Capacity/Bidding", "Eviction Band %", "Preemptions",
+                 "Last Preemption", "Preemption Age (days)", "Churn (ops/day)",
+                 "Cluster Churn Unattributed (ops/day)", "Risk Band", "Risk Reason",
+                 "Recommended SKU", "Recommended Band %", "Arch Note",
+                 "Price Delta $/hr", "Placement Score", "SKU Swap Status",
+                 "verify_before_move"]
+    risk_df = pd.DataFrame(
+        pool_rows(clusters, pools_by_cluster, preemption_by_pool(eviction_df),
+                  churn_rates, eviction_rate, placement_by_region, args.currency) or None,
+        columns=pool_cols)
     if not risk_df.empty:
         risk_df = risk_df.sort_values(
             by=["Risk Band", "Churn (ops/day)", "Preemptions"],
             key=lambda x: x.map(BAND_ORDER) if x.name == "Risk Band" else x,
             ascending=[True, False, False])
-
-    pool_size_by_key = {(c["id"].lower(), str(p["pool"]).lower()): p.get("vm_size", "")
-                        for c in clusters for p in pools_by_cluster.get(c["id"].lower(), [])}
-    snap_cols = ["Subscription", "Cluster", "Pool", "VM Size", "Preempted Instances",
-                 "First Seen", "Last Seen", "Age (days)", "Contexts"]
-    snapshot_df = pd.DataFrame(snapshot_rows(eviction_df, pool_size_by_key) or None,
-                               columns=snap_cols)
+    swap_candidates = (int((risk_df["SKU Swap Status"] == "SWAP CANDIDATE").sum())
+                       if not risk_df.empty else 0)
 
     trend_cols = ["Date", "Churn Ops", "Clusters Affected", "Pools Affected"]
     trend_df = pd.DataFrame(churn_daily_rows(churn_df, args.days) or None,
                             columns=trend_cols)
 
-    inv_cols = ["Cluster", "Pool", "Spot Max Price", "Node Count", "VM Size", "Zones",
-                "Eviction Policy", "Priority"]
-    inventory_df = pd.DataFrame(inventory_rows(clusters, pools_by_cluster) or None,
-                                columns=inv_cols)
-
-    alt_cols = ["Cluster", "Pool", "Region", "Current SKU", "Current Band %", "Nodes",
-                "Recommended SKU", "Recommended Band %", "Arch Note", "Price Delta $/hr",
-                "Placement Score", "Status", "verify_before_move"]
-    sku_alt_df = pd.DataFrame(
-        sku_alternative_rows(clusters, pools_by_cluster, eviction_rate,
-                             placement_by_region, args.currency) or None,
-        columns=alt_cols)
+    # A blank reference sheet reads as "no risk"; say which of the three causes it
+    # actually was (no spot pool in scope / table empty / nothing in our regions).
     evrate_df = pd.DataFrame(evrate_rows or None, columns=["SKU", "Region", "Eviction Band %"])
-    swap_candidates = (int((sku_alt_df["Status"] == "SWAP CANDIDATE").sum())
-                       if not sku_alt_df.empty else 0)
+    if evrate_df.empty:
+        evrate_df = pd.DataFrame([{"SKU": "(no data)", "Region": "",
+                                   "Eviction Band %": evrate_note}])
+
+    ev_cols_raw = ["Source", "Subscription", "Cluster", "Pool", "Timestamp",
+                   "Resource", "Instance", "Event", "Detail"]
+    evidence_df = pd.DataFrame(raw_evidence_rows(eviction_df, churn_df) or None,
+                               columns=ev_cols_raw)
 
     wb = excel.new_workbook()
     excel.add_readme(wb, "Spot Node Eviction Risk", [
@@ -720,47 +740,45 @@ def main(argv=None):
         "VERIFY: healthresources emission on VMSS-Uniform pools is undocumented. "
         "Test with a known preemption to confirm the annotation captures it.",
         "",
-        "SOLUTION SIGNAL (SkuAlternatives): SpotResources (ARG) publishes a banded "
-        "eviction rate (0-5 / 5-10 / 10-15 / 15-20 / 20+ %, next-hour chance) per VM "
-        "SKU per region. For each spot pool we find same-vCPU/mem in-region SKUs with "
-        "a LOWER band and surface them as swap candidates (price delta from Retail "
-        "Prices). With --placement-score we also call the Spot Placement Score API "
-        "(preview, High/Medium/Low, forward-looking) to confirm the top pick. A swap "
-        "is disruptive (spot priority is immutable -> new pool + drain): this SCREENS, "
-        "it is not a migration plan. Every row carries verify_before_move.",
-    ])
+        "SOLUTION SIGNAL (the swap-candidate columns on SpotPoolRisk): SpotResources "
+        "(ARG) publishes a banded eviction rate (0-5 / 5-10 / 10-15 / 15-20 / 20+ %, "
+        "next-hour chance) per VM SKU per region. For each spot pool we find "
+        "same-vCPU/mem in-region SKUs with a LOWER band and surface the best one as a "
+        "swap candidate (price delta from Retail Prices). With --placement-score we "
+        "also call the Spot Placement Score API (preview, High/Medium/Low, "
+        "forward-looking) to confirm the top pick. A swap is disruptive (spot priority "
+        "is immutable -> new pool + drain): this SCREENS, it is not a migration plan. "
+        "Every row carries verify_before_move.",
+        "",
+        "TABS: Scorecard (KPI cards) -> SpotPoolRisk (the report: one row per spot "
+        "pool) -> ChurnTrend (daily churn series) -> RemediationGuide (what to do) -> "
+        "EvictionRates + RawEvidence (reference).",
+        "",
+        "LIMITATIONS:",
+    ] + ["  - %s: %s" % (lim["Item"], lim["Description"]) for lim in LIMITATIONS])
 
     excel.add_scorecard(wb, "Scorecard",
                         scorecard_cards(risk_df, eviction_df, churn_df,
                                         len(spot_clusters), swap_candidates, args.days),
                         section="summary", per_row=3, title=None)
 
-    ws_risk = excel.add_table(wb, "RiskAssessment", risk_df, section="summary",
+    ws_risk = excel.add_table(wb, "SpotPoolRisk", risk_df, section="summary",
                              int_cols=("Preemptions", "Nodes", "Zones"),
                              fail_cols=("Risk Band",), fail_values=("HIGH",),
                              warn_values=("MED",))
     if len(risk_df) > 1:
         excel.add_bar_chart(ws_risk, "VMSS churn by spot pool (ops/day, proxy)",
-                            len(risk_df) + 1, risk_cols.index("Churn (ops/day)") + 1,
-                            "R2", y_title="ops/day", cat_col=2)
-    excel.add_table(wb, "SkuAlternatives", sku_alt_df, section="summary",
-                   int_cols=("Nodes",))
-    excel.add_table(wb, "EvictionSnapshot", snapshot_df, section="summary",
-                   int_cols=("Preempted Instances",))
+                            len(risk_df) + 1, pool_cols.index("Churn (ops/day)") + 1,
+                            "AB2", y_title="ops/day",
+                            cat_col=pool_cols.index("Pool") + 1)
     ws_trend = excel.add_table(wb, "ChurnTrend", trend_df, section="summary",
                               int_cols=("Churn Ops", "Clusters Affected", "Pools Affected"))
     if len(trend_df) > 1:
         excel.add_line_chart(ws_trend, "Daily VMSS churn ops (eviction proxy)",
                              len(trend_df) + 1, 2, 2, "F2", y_title="ops")
     excel.add_table(wb, "RemediationGuide", pd.DataFrame(REMEDIATION), section="detail")
-    excel.add_table(wb, "SpotPoolInventory", inventory_df, section="reference",
-                   int_cols=("Node Count",))
     excel.add_table(wb, "EvictionRates", evrate_df, section="reference")
-    excel.add_table(wb, "RawHealthResources", eviction_df, section="reference")
-    excel.add_table(wb, "RawActivityLog",
-                   churn_df.sort_values("timestamp", ascending=False)
-                   if not churn_df.empty else churn_df, section="reference")
-    excel.add_table(wb, "Limitations", pd.DataFrame(LIMITATIONS), section="reference")
+    excel.add_table(wb, "RawEvidence", evidence_df, section="reference")
 
     path = excel.save(wb, out_path(args, "aks_spot_eviction", env_filter))
     log("Report written: %s" % path)

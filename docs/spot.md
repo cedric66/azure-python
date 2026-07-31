@@ -46,31 +46,43 @@ kubectl access.
 
 ## Spot eviction report
 
-`spot-eviction` assesses per-pool preemption risk from two Reader-scope,
-kubectl-free signals and recommends lower-eviction SKUs:
+`spot-eviction` assesses per-pool preemption risk from Reader-scope,
+kubectl-free signals and recommends lower-eviction SKUs. Everything at the
+`(cluster, pool)` grain lands on **one** sheet, `SpotPoolRisk` — one row per spot
+pool carrying the pool config, both observed signals, the durable eviction band,
+the HIGH/MED/LOW verdict with its `Risk Reason`, and the swap candidate:
 
-- **EvictionSnapshot** — per-pool roll-up of `healthresources`
-  `VirtualMachinePreempted` annotations (a named, platform-initiated eviction
-  event; a current, *ephemeral* snapshot). Raw rows stay on `RawHealthResources`.
-- **ChurnTrend** — node-RG Activity Log VMSS delete/deallocate ops aggregated per
-  day (durable but noisy; mixes evictions with autoscale-down). Churn is
-  attributed to the pool its scale-set name resolves to; anything that does not
-  resolve is reported per cluster in a separate *unattributed* column rather than
-  charged to every pool.
-- **SkuAlternatives** — from the ARG `SpotResources` banded eviction rate
-  (`0-5`…`20+` % next-hour) per SKU/region, the report finds same-vCPU/mem
-  in-region SKUs with a *lower* band as swap candidates, with a retail price
-  delta and (with `--placement-score`) a forward-looking High/Med/Low placement
-  score. A swap means a new pool + drain (spot priority is immutable), so every
-  row carries a `verify_before_move` caveat.
+- **Preemption columns** (`Preemptions`, `Last Preemption`, `Preemption Age
+  (days)`) — `healthresources` `VirtualMachinePreempted` annotations (a named,
+  platform-initiated eviction event; a current, *ephemeral* snapshot).
+- **Churn columns** (`Churn (ops/day)`, `Cluster Churn Unattributed (ops/day)`) —
+  node-RG Activity Log VMSS delete/deallocate ops (durable but noisy; mixes
+  evictions with autoscale-down). Churn is attributed to the pool its scale-set
+  name resolves to; anything that does not resolve is reported per cluster in the
+  separate *unattributed* column rather than charged to every pool.
+- **Swap columns** (`Recommended SKU`, `Recommended Band %`, `Arch Note`, `Price
+  Delta $/hr`, `Placement Score`, `SKU Swap Status`, `verify_before_move`) — from
+  the ARG `SpotResources` banded eviction rate (`0-5`…`20+` % next-hour) per
+  SKU/region, the report finds same-vCPU/mem in-region SKUs with a *lower* band,
+  with a retail price delta and (with `--placement-score`) a forward-looking
+  High/Med/Low placement score. A swap means a new pool + drain (spot priority is
+  immutable), so every row carries a `verify_before_move` caveat.
 
-`RiskAssessment` scores each spot pool HIGH/MED/LOW from those signals plus the
-pool's eviction band, whether it is prod, whether its bid is price-capped and
-whether it is single-zone, and spells out the reasons in a `Risk Reason` column.
+Tabs: `ReadMe` (method + limitations), `Scorecard`, `SpotPoolRisk`, `ChurnTrend`
+(daily churn series + chart), `RemediationGuide`, then two reference sheets —
+`EvictionRates` (the raw `SpotResources` bands) and `RawEvidence` (Resource
+Health annotations ∪ Activity Log churn ops, tagged by a `Source` column).
 
-Tabs: `Scorecard`, `RiskAssessment`, `SkuAlternatives`, `EvictionSnapshot`,
-`ChurnTrend`, `RemediationGuide`, `SpotPoolInventory`, `EvictionRates`,
-`RawHealthResources`, `RawActivityLog`, `Limitations`.
+`EvictionRates` never ships blank: when there is nothing to show it carries a
+one-row diagnostic naming which of the three causes applied — no spot pool in
+scope (the query is skipped), ARG returned zero `SpotResources` rows, or rows
+came back but none for a region holding a spot pool.
+
+Note that `EvictionRates` and the preemption rows are *independent* sources, so
+one can be empty while the other is full. The `healthresources` query is
+fleet-wide, not restricted to AKS node RGs, so it also catches standalone spot
+VMs, non-AKS scale sets, and pools that no longer exist — those rows read as
+cluster `(unmatched)`.
 
 The run ends with `Report written: out/aks_spot_eviction_<scope>_<stamp>.xlsx`.
 
@@ -101,12 +113,19 @@ uv run python aks_report.py spot-eviction --all --placement-score
 uv run python aks_report.py spot-eviction --all --no-eviction-scan
 ```
 
-Watch the log line `Spot eviction rates: N rows from ARG, M kept after region
-filter …` — it tells you whether the `SpotResources` data behind the
-`SkuAlternatives`/`EvictionRates` tabs came back.
+Two log lines settle where the data came from:
 
-Isolate the `SpotResources` data source directly (fastest check when those tabs
-are empty):
+- `Spot eviction rates: N rows from ARG, M kept after region filter (K spot-pool
+  region(s) in scope: …)` — whether the `SpotResources` data behind the
+  `EvictionRates` tab and the swap columns came back. If there are no spot pools
+  in scope you get `No spot node pool in scope, so the SpotResources query was
+  skipped …` instead.
+- `Preemption annotations: N row(s), M matched to a cluster in scope` — if `N` is
+  non-zero but `M` is 0, those preemptions were *not* AKS node pools in scope
+  (the query is fleet-wide), so they say nothing about AKS VMSS-Uniform emission.
+
+Isolate the `SpotResources` data source directly (fastest check when
+`EvictionRates` is empty):
 
 ```bash
 az extension add --name resource-graph   # one-time

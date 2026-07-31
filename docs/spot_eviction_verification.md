@@ -10,7 +10,7 @@ minutes of an eviction)?
 
 ## 1. Purpose
 
-The report's primary signal — `EvictionSnapshot`, built from
+The report's primary signal — the preemption columns on `SpotPoolRisk`, built from
 `microsoft.resourcehealth/resourceannotations` records with
 `annotationName == 'VirtualMachinePreempted'` — is a **named, Platform-
 Initiated eviction event**. It is materially better evidence than the
@@ -25,7 +25,7 @@ AKS replaces the evicted node (which it does automatically, fast), then the
 two-signal design is dead on arrival and the report must ship in a
 degraded, churn-only mode from day one. This must be checked against a real
 tenant (ideally with an actual or simulated eviction) **before** the report
-ships EvictionSnapshot as a trustworthy tab, not after.
+ships those columns as a trustworthy signal, not after.
 
 ## 2. Ready-to-run ARG query — tenant-wide VirtualMachinePreempted scan
 
@@ -147,9 +147,9 @@ present once that replacement lands.
 
 | Observation | Conclusion | Action |
 |---|---|---|
-| Query #3 (AKS-VMSS-scoped) returns rows matching your simulated/observed eviction, and they're still present a few minutes later | `healthresources` **does** emit for Uniform VMSS AKS nodes | Two-signal mode confirmed; `EvictionSnapshot` is a trustworthy primary signal, ship as designed |
+| Query #3 (AKS-VMSS-scoped) returns rows matching your simulated/observed eviction, and they're still present a few minutes later | `healthresources` **does** emit for Uniform VMSS AKS nodes | Two-signal mode confirmed; the `SpotPoolRisk` preemption columns are a trustworthy primary signal, ship as designed |
 | Zero rows in either query, even polled immediately after a known eviction | `healthresources` does **not** emit for Uniform VMSS, or the annotation is too ephemeral to ever observe | Report degrades to Activity-Log-churn-only; document this loudly in the report's ReadMe tab, treat `--no-eviction-scan` as the expected default posture, and lean on `ChurnTrend` (VMSS delete/deallocate proxy, same caveat as `spot_savings`'s `vmss_churn_approx` — it conflates evictions with autoscale-down) |
-| Rows appear right after the eviction, then vanish within minutes on re-poll | Confirms snapshot ephemerality | Document that `EvictionSnapshot` only shows currently/very-recently-preempted instances — it is a point-in-time snapshot, not history. See §6 for how to get real history |
+| Rows appear right after the eviction, then vanish within minutes on re-poll | Confirms snapshot ephemerality | Document that the preemption columns only show currently/very-recently-preempted instances — it is a point-in-time snapshot, not history. See §6 for how to get real history |
 
 ## 6. Persistence check — getting history beyond the live snapshot
 
@@ -176,7 +176,7 @@ pointer for anyone who wants eviction history beyond what ARG can hold.
 
 ## 7. Solution-side signals — SpotResources eviction rates + Placement Score
 
-The report's `SkuAlternatives` tab (the "solution" half) rests on two *other*
+The report's swap columns on `SpotPoolRisk` (the "solution" half) rest on two *other*
 data sources whose live behaviour should be spot-checked the same way. Both
 stay at subscription-Reader scope, kubectl-free. Unlike the healthresources
 question above, these are documented APIs — the verification here is about
@@ -281,4 +281,4 @@ column already says on every row.
   own documentation (its ReadMe tab / this repo's `CLAUDE.md`) once
   confirmed, per this repo's convention of keeping the codebase map
   accurate — whichever branch of §5 turns out true changes what
-  `EvictionSnapshot` is allowed to claim.
+  the preemption columns are allowed to claim.

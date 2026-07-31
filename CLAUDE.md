@@ -142,12 +142,24 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
 `--image-warn-days`, `--hotspot-min-usd`.
 
 - `spot-eviction` (spot_eviction.py): healthresources `VirtualMachinePreempted` = CLASSIFIER (precise, ephemeral); vmss_churn_events = COUNTER (durable, noisy). Filter healthresources by annotationName only (NOT context/category — MS docs vary 'Platform Initiated' vs 'Platform-Initiated'), ARG table is `healthresources` NOT `resources`. Attribution via targetResourceId path: VMSS-name segment (after virtualMachineScaleSets/) matched to pool by regex `^aks-([a-z0-9]+)-[a-z0-9]+-vmss$`. Pool `spot_max_price` discriminator: -1 = capacity-reclaim only; fixed cap = price eviction possible. Compare pool priority field case-insensitively (`"Spot"` vs lowercase). CAVEAT: healthresources is a latest-snapshot table (~14-day change history); whether it emits VirtualMachinePreempted for AKS VMSS-Uniform instances and whether annotations survive node replacement are unverified. See docs/spot_eviction_verification.md.
-  SOLUTION side (`SkuAlternatives` summary tab + `EvictionRates` reference): ARG
+  SHEETS (7, deliberately consolidated from 12 - do NOT re-split): ReadMe (method +
+  LIMITATIONS folded in as bullets, no separate tab) -> Scorecard -> `SpotPoolRisk`
+  (THE report: ONE row per spot pool, 26 cols, merging what used to be
+  RiskAssessment + SkuAlternatives + EvictionSnapshot + SpotPoolInventory - four
+  views of the same `(cluster_id, pool)` key the reader had to join by hand; built
+  by `pool_rows`, HIGH/MED conditional formatting + churn bar chart) -> ChurnTrend ->
+  RemediationGuide -> `EvictionRates` + `RawEvidence` (reference; RawEvidence merges
+  the old RawHealthResources + RawActivityLog with a `Source` column, built by
+  `raw_evidence_rows`). Dropped as redundant inside the merged row: Priority (always
+  Spot), Current SKU (== VM Size), Current Band % (== Eviction Band %); First Seen /
+  Contexts live in RawEvidence's `Detail`. `Status` was renamed `SKU Swap Status` to
+  avoid a name collision in the merged row.
+  SOLUTION side (the swap columns on `SpotPoolRisk` + `EvictionRates` reference): ARG
   `SpotResources` table (`arg.SPOT_EVICTION_RATE_KQL`, type
   `microsoft.compute/skuspotevictionrate/location`) gives a BANDED eviction rate per
   SKU/region as a string bucket ("0-5"/"5-10"/"10-15"/"15-20"/"20+", next-hour %) -
   `EVICTION_ORDER`/`band_rank` ordinalize it (unknown ranks WORST=99 so a rate we
-  can't read is never recommended). `sku_alternative_rows` finds, per spot pool,
+  can't read is never recommended). `best_alternative` finds, per spot pool,
   same-vCPU/mem in-region SKUs (candidates drawn from the region's OWN SpotResources
   rows ∩ the static `_SKU_CAP` map, so they're region-available) with a strictly
   lower band; ARM64 surfaced with an "Arch Note" but never silently preferred (same
@@ -163,9 +175,10 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   the shared subscriptionId row-filter (early return), routed by "spotresources"/
   "skuspotevictionrate" in the query; fixture `SPOT_EVICTION_RATES` gives D8s_v5@15-20
   + D8as_v5@0-5 in westeurope so `chk_eviction` asserts a D8as_v5 SWAP CANDIDATE.
-  STRUCTURE: the row builders are module-level (`preemption_rows`, `snapshot_rows`,
-  `pool_churn_rates`, `churn_trend_rows`, `risk_rows`, `sku_alternative_rows`,
-  `inventory_rows`, `scorecard_cards`) so they are unit-testable; `main()` only
+  STRUCTURE: the row builders are module-level (`eviction_rows`,
+  `preemption_by_pool`, `pool_churn_rates`, `churn_daily_rows`, `pool_rows`,
+  `best_alternative`, `raw_evidence_rows`, `scorecard_cards`) so they are
+  unit-testable; `main()` only
   orchestrates. Output stem is `aks_spot_eviction` (was `spot_eviction` - every other
   report is `aks_*`) and `main()` RETURNS the path and log()s `Report written: <path>`.
   Churn is attributed PER POOL (`pool_churn_rates` keys `(cluster_id, pool)` via
@@ -174,11 +187,10 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   every pool's rate (a 2-spot-pool cluster used to report the whole cluster's churn
   twice). `_risk_band` takes `eviction_band` and `zones` as extra inputs: band rank
   >=3 +2 / ==2 +1, single-zone spot pool +1 - note the ASYMMETRY with
-  `sku_alternative_rows`, where an unknown band ranks WORST (never recommend what we
+  `best_alternative`, where an unknown band ranks WORST (never recommend what we
   cannot read) but here scores ZERO (a data gap is not evidence of risk).
-  `EvictionSnapshot` is a per-pool roll-up (not raw rows), `ChurnTrend` a per-day
-  aggregate (Date/Churn Ops/Clusters Affected/Pools Affected) with a line chart;
-  `RiskAssessment` has HIGH/MED conditional formatting + a churn bar chart.
+  `ChurnTrend` is a per-day aggregate (Date/Churn Ops/Clusters Affected/Pools
+  Affected) with a line chart.
   `age_days` normalises timestamps with `pd.to_datetime(..., utc=True,
   format="mixed")` - without `format="mixed"` pandas infers ONE format from the first
   element and coerces the rest to NaT, silently dropping the newest preemption.
@@ -186,7 +198,21 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   returns every SKU in every region). Smoke fixture has a SECOND ACTIVITY churn row
   on `aks-bat-44444444-vmss` (aks-prod-01's real spot pool, different day) so
   `chk_eviction` can assert per-pool attribution, the unattributed column, a HIGH
-  band citing the 15-20 eviction rate, and a 2-row ChurnTrend.
+  band citing the 15-20 eviction rate, a 2-row ChurnTrend, both Sources on
+  RawEvidence, and that the 7 consolidated-away sheet names are ABSENT.
+  EMPTY `EvictionRates` IS EXPECTED and has exactly 3 causes - the sheet now
+  self-diagnoses with a one-row `(no data)` note naming which one (a blank
+  reference sheet otherwise reads as "no risk"): (a) no spot pool in scope so the
+  query was skipped, (b) ARG returned 0 SpotResources rows (the table is not
+  surfaced in every tenant/cloud), (c) rows came back but none in a spot-pool
+  region. `EvictionRates` (SpotResources) and the preemption columns
+  (healthresources) are INDEPENDENT sources - one being full says nothing about the
+  other, so "EvictionRates empty but raw preemptions present" is not a bug.
+  `HEALTHRESOURCES_KQL` is FLEET-WIDE (not restricted to AKS node RGs): it also
+  catches standalone spot VMs, non-AKS VMSS and pools that no longer exist, which
+  land as cluster `(unmatched)`. So raw preemption rows alone do NOT confirm AKS
+  VMSS-Uniform emission - the log line `Preemption annotations: N row(s), M matched
+  to a cluster in scope` is what settles it (M>0 is the evidence).
 ## Conventions (follow these when adding a report)
 
 - Module pattern: docstring (first line becomes argparse description), constants,

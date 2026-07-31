@@ -1045,10 +1045,11 @@ def main():
          "pool_name": "spot", "instance_id": "1", "vmss_name": "aks-spot-a-vmss",
          "occurred_time": "2026-06-11 05:00:00", "annotation_context": ""},
     ])
-    snapshot = spot_eviction.snapshot_rows(
-        mixed_snapshot, {("c", "spot"): "Standard_D4s_v5"})
-    _expect(snapshot[0]["Last Seen"] == "2026-06-11 05:00",
+    snapshot = spot_eviction.preemption_by_pool(mixed_snapshot)
+    _expect(snapshot[("c", "spot")]["Last Seen"] == "2026-06-11 05:00",
             "mixed timestamp formats must preserve the newest snapshot time: %s" % snapshot)
+    _expect(snapshot[("c", "spot")]["Preempted Instances"] == 2,
+            "distinct instances in one VMSS must both count: %s" % snapshot)
 
     duplicate_instance_ids = spot_eviction.pd.DataFrame([
         {"cluster_id": "c1", "vmss_name": "aks-spot-a-vmss", "instance_id": "0"},
@@ -1442,31 +1443,32 @@ def main():
         [chk_nonprod_spot])
 
     def chk_eviction(wb):
-        sheets_expected = ["Scorecard", "RiskAssessment", "SkuAlternatives",
-                          "EvictionSnapshot", "ChurnTrend", "RemediationGuide",
-                          "SpotPoolInventory", "EvictionRates", "RawHealthResources",
-                          "RawActivityLog", "Limitations"]
+        sheets_expected = ["Scorecard", "SpotPoolRisk", "ChurnTrend",
+                          "RemediationGuide", "EvictionRates", "RawEvidence"]
         for sheet in sheets_expected:
             _expect(sheet in wb.sheetnames,
                    "spot_eviction: missing sheet %s (has %s)" % (sheet, wb.sheetnames))
-        
-        # RawHealthResources should have exactly 2 rows (deallocation filtered)
-        ws_health = wb["RawHealthResources"]
-        _expect(ws_health.max_row == 3,  # header + 2 data rows
-               "RawHealthResources should have exactly 2 preempted instances (got %d)" % (ws_health.max_row - 1))
-        
-        # EvictionSnapshot is a per cluster/pool roll-up (the raw annotation dump
-        # stays on RawHealthResources): 2 preempted instances on one pool -> 1 row.
-        ws_eviction = wb["EvictionSnapshot"]
-        hdr = [ws_eviction.cell(row=1, column=j).value for j in range(1, ws_eviction.max_column + 1)]
-        for col in ("Pool", "Preempted Instances", "Last Seen", "Age (days)"):
-            _expect(col in hdr, "EvictionSnapshot missing column %s: %s" % (col, hdr))
-        pool_col, cnt_col = hdr.index("Pool") + 1, hdr.index("Preempted Instances") + 1
-        snap = {ws_eviction.cell(row=r, column=pool_col).value:
-                ws_eviction.cell(row=r, column=cnt_col).value
-                for r in range(2, ws_eviction.max_row + 1)}
-        _expect(snap.get("bat") == 2,
-               "EvictionSnapshot should roll 2 preempted instances up to pool 'bat': %s" % snap)
+        # the four per-pool tabs were consolidated into SpotPoolRisk; the two raw
+        # dumps into RawEvidence. Regressing that would silently re-split the report.
+        for gone in ("RiskAssessment", "SkuAlternatives", "EvictionSnapshot",
+                     "SpotPoolInventory", "RawHealthResources", "RawActivityLog",
+                     "Limitations"):
+            _expect(gone not in wb.sheetnames,
+                   "spot_eviction: %s should be consolidated away (has %s)"
+                   % (gone, wb.sheetnames))
+
+        # RawEvidence carries both signals tagged by Source: 2 preempted instances
+        # (the deallocation annotation is filtered out) + 2 Activity Log churn ops.
+        ws_raw = wb["RawEvidence"]
+        rhdr = [ws_raw.cell(row=1, column=j).value for j in range(1, ws_raw.max_column + 1)]
+        _expect("Source" in rhdr, "RawEvidence missing the Source column: %s" % rhdr)
+        src_col = rhdr.index("Source") + 1
+        sources = [ws_raw.cell(row=r, column=src_col).value
+                   for r in range(2, ws_raw.max_row + 1)]
+        _expect(sources.count("Resource Health") == 2,
+               "RawEvidence should carry exactly 2 preemptions: %s" % sources)
+        _expect(sources.count("Activity Log") >= 2,
+               "RawEvidence should carry the Activity Log churn ops too: %s" % sources)
 
         # RemediationGuide should have both Capacity-Reclaim and Price-Cap Tuning
         ws_remediation = wb["RemediationGuide"]
@@ -1478,27 +1480,33 @@ def main():
             _expect("Capacity-Reclaim" in strategies and "Price-Cap Tuning" in strategies,
                    "RemediationGuide should contain both strategies: %s" % strategies)
         
-        # RiskAssessment: one row per spot pool, carrying both observed signals, the
-        # durable SKU eviction band and the per-pool/unattributed churn split.
-        ws_risk = wb["RiskAssessment"]
+        # SpotPoolRisk: one row per spot pool, carrying config, both observed signals,
+        # the durable SKU eviction band, the verdict and the swap candidate - the four
+        # tabs that used to key on (cluster, pool) folded into one.
+        ws_risk = wb["SpotPoolRisk"]
         hdr = [ws_risk.cell(row=1, column=j).value for j in range(1, ws_risk.max_column + 1)]
         for col in ("Pool", "Risk Band", "Risk Reason", "Eviction Band %", "Zones",
-                    "Churn (ops/day)", "Cluster Churn Unattributed (ops/day)"):
-            _expect(col in hdr, "RiskAssessment missing column %s: %s" % (col, hdr))
+                    "Churn (ops/day)", "Cluster Churn Unattributed (ops/day)",
+                    "Preemptions", "Last Preemption", "Capacity/Bidding",
+                    "Recommended SKU", "SKU Swap Status", "verify_before_move"):
+            _expect(col in hdr, "SpotPoolRisk missing column %s: %s" % (col, hdr))
         rows = [{h: ws_risk.cell(row=r, column=j + 1).value for j, h in enumerate(hdr)}
                 for r in range(2, ws_risk.max_row + 1)]
         for row in rows:
             _expect(row["Risk Band"] in {"HIGH", "MED", "LOW"},
                    "Risk Band should be one of HIGH/MED/LOW, got %s" % row["Risk Band"])
         bat = next((r for r in rows if r["Pool"] == "bat"), None)
-        _expect(bat is not None, "RiskAssessment missing the spot pool 'bat': %s" % rows)
+        _expect(bat is not None, "SpotPoolRisk missing the spot pool 'bat': %s" % rows)
+        # the roll-up of the 2 raw annotations lands on the pool's own row now
+        _expect(bat["Preemptions"] == 2,
+               "SpotPoolRisk should roll 2 preempted instances up to pool 'bat': %s" % bat)
         # prod + live preemptions + a 15-20 band SKU + churn -> HIGH, and the band
         # must actually reach the score (it is the durable counterweight to the
         # ephemeral health snapshot).
         _expect(bat["Risk Band"] == "HIGH",
                "prod spot pool on a 15-20 band SKU with preemptions should be HIGH: %s" % bat)
         _expect("15-20" in str(bat["Eviction Band %"]),
-               "RiskAssessment should surface the SpotResources band: %s" % bat)
+               "SpotPoolRisk should surface the SpotResources band: %s" % bat)
         _expect("eviction-rate SKU" in str(bat["Risk Reason"]),
                "eviction band should be scored in Risk Reason: %s" % bat)
         # Churn attribution: the fixture's aks-bat-*-vmss op is charged to 'bat',
@@ -1515,24 +1523,24 @@ def main():
         _expect(thdr == ["Date", "Churn Ops", "Clusters Affected", "Pools Affected"],
                "ChurnTrend unexpected columns: %s" % thdr)
 
-        # SkuAlternatives: D8s_v5 spot pool in westeurope (15-20 band) should get a
-        # lower-eviction swap candidate (D8as_v5 at 0-5).
-        ws_alt = wb["SkuAlternatives"]
-        hdr = [ws_alt.cell(row=1, column=j).value for j in range(1, ws_alt.max_column + 1)]
-        _expect("Recommended SKU" in hdr and "Status" in hdr,
-               "SkuAlternatives missing expected columns: %s" % hdr)
-        sc = hdr.index("Status") + 1
-        rc = hdr.index("Recommended SKU") + 1
-        swap = [(ws_alt.cell(row=r, column=rc).value)
-                for r in range(2, ws_alt.max_row + 1)
-                if ws_alt.cell(row=r, column=sc).value == "SWAP CANDIDATE"]
-        _expect(any(str(v).lower() == "standard_d8as_v5" for v in swap),
-               "SkuAlternatives should recommend Standard_D8as_v5, got %s" % swap)
+        # Swap candidate: the D8s_v5 spot pool in westeurope (15-20 band) should be
+        # offered D8as_v5 (0-5) on its own row, with the immutability caveat.
+        swap = [r for r in rows if r["SKU Swap Status"] == "SWAP CANDIDATE"]
+        _expect(any(str(r["Recommended SKU"]).lower() == "standard_d8as_v5"
+                    for r in swap),
+               "SpotPoolRisk should recommend Standard_D8as_v5, got %s"
+               % [r["Recommended SKU"] for r in swap])
+        _expect(all(r["verify_before_move"] for r in swap),
+               "every swap candidate must carry verify_before_move: %s" % swap)
+
+        # EvictionRates must never be silently blank: either bands, or a row naming
+        # which of the three causes emptied it.
+        ws_rate = wb["EvictionRates"]
+        _expect(ws_rate.max_row > 1, "EvictionRates should never be empty")
 
     run(spot_eviction, base + ["--all", "--days", "14"],
-        ["ReadMe", "Scorecard", "RiskAssessment", "SkuAlternatives", "EvictionSnapshot",
-         "ChurnTrend", "RemediationGuide", "SpotPoolInventory", "EvictionRates",
-         "RawHealthResources", "RawActivityLog", "Limitations"],
+        ["ReadMe", "Scorecard", "SpotPoolRisk", "ChurnTrend", "RemediationGuide",
+         "EvictionRates", "RawEvidence"],
         [chk_eviction])
 
 
