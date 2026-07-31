@@ -270,6 +270,9 @@ def best_alternative(vm_size, region, by_region, cur_band, placement_by_region,
         return dict(ALT_EMPTY, **{
             "SKU Swap Status": "SKU not in capability map - verify manually",
             "verify_before_move": "Confirm SKU specs + regional availability by hand"})
+    if cur_band is None or band_rank(cur_band) == 99:
+        return dict(ALT_EMPTY, **{
+            "SKU Swap Status": "Eviction rate data unavailable"})
     candidates = []
     for sku_key, band in by_region.get(region, {}).items():
         if sku_key == cur_key:

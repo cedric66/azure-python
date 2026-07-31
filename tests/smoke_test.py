@@ -1037,6 +1037,15 @@ def main():
     _expect(band == "LOW" and "eviction-rate SKU" not in reason,
             "unknown eviction band must add zero risk: %s / %s" % (band, reason))
 
+    unknown_current = spot_eviction.best_alternative(
+        "Standard_D8s_v5", "westeurope",
+        {"westeurope": {"standard_d8as_v5": "0-5"}},
+        None, {}, "USD")
+    _expect(unknown_current["SKU Swap Status"] == "Eviction rate data unavailable"
+            and not unknown_current["Recommended SKU"],
+            "a missing current band cannot support a lower-eviction claim: %s"
+            % unknown_current)
+
     mixed_snapshot = spot_eviction.pd.DataFrame([
         {"subscription": "s", "cluster_id": "c", "cluster_name": "c",
          "pool_name": "spot", "instance_id": "0", "vmss_name": "aks-spot-a-vmss",
