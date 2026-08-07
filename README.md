@@ -3,8 +3,8 @@
 One front-door Python script, `aks_report.py`, for AKS reports across many Azure
 subscriptions using **subscription-level read access only** (no kubectl). Report
 modules live under `reports/<category>/`; day-to-day usage goes through the
-launcher. Every report writes a formatted multi-tab `.xlsx` into `out/` (override
-with `--out`).
+launcher. Reports write formatted multi-tab `.xlsx` files into `out/` (override
+with `--out`); the focused `resources` inventory is the CSV exception.
 
 Built for scale: ~25 subscriptions / ~500 clusters. Inventory comes from Azure
 Resource Graph (a handful of calls for the whole fleet); cost comes from
@@ -22,6 +22,7 @@ Or skip the menu:
 
 ```bash
 uv run python aks_report.py inventory --all
+uv run python aks_report.py resources --subs contoso-platform
 uv run python aks_report.py cost --subs contoso-platform --env dev
 uv run python aks_report.py spot-eviction --all --days 14
 uv run python aks_report.py list          # every report key + description
@@ -60,7 +61,7 @@ Run any of these as `aks_report.py <key>` (aliases in
 - **Spot** — `spot`, `spot-design`, `spot-savings`, `spot-eviction`, `workload-spot`
 - **Security & policy** — `governance`, `conformance`, `policy`, `policy-components`, `vulnerabilities`
 - **Lifecycle** — `version`, `container-eol`, `aks-lifecycle`
-- **Platform** — `design`, `network`, `rearch`
+- **Platform** — `design`, `network`, `rearch`, `resources`
 
 Plus the `sandbox` command family and a `convert` (Markdown→DOCX/PDF) command.
 
@@ -74,7 +75,7 @@ examples/              *.example.* config/rule templates (incl. subscriptions.ex
 manifests/, policies/  vendored descheduler + sample policy test manifests
 docs/                  this documentation
 workloads/             drop zone for exported workload YAML (gitignored; see its README)
-out/                   generated .xlsx (gitignored)
+out/                   generated reports, including .xlsx and resource .csv (gitignored)
 ```
 
 Contributor map: [CLAUDE.md](CLAUDE.md).

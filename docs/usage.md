@@ -17,6 +17,7 @@ You can also skip the menu:
 
 ```bash
 uv run python aks_report.py inventory --all
+uv run python aks_report.py resources --subs contoso-platform
 uv run python aks_report.py cost --subs contoso-platform --env dev
 uv run python aks_report.py deepdive --env dev --cluster aks-dev-01
 uv run python aks_report.py design --cluster aks-dev-01 --all
@@ -77,6 +78,11 @@ is the exception because it makes several Cost Management queries per cluster; i
 you do not pass `--cluster`/`--cluster-id`, it asks which single cluster to
 analyze after subscription and environment narrowing.
 
+`resources` is subscription-scoped rather than cluster-scoped and requires
+exactly one subscription. Pass `--subs <name-or-guid>` to avoid the irrelevant
+environment prompt; the selected subscription must be present and enabled in
+`subscriptions.csv`.
+
 A cluster's environment = cluster tags -> resource group tags -> name inference
 (tag keys checked: `environment`, `env`, `stage`; override with
 `--env-tag-keys`). If no tag is present, the scripts infer from cluster,
@@ -135,6 +141,8 @@ subscription_id,subscription_name,include
 
 ```bash
 uv run python aks_report.py inventory --all
+uv run python aks_report.py resources --subs contoso-platform
+uv run python aks_report.py resources --subs contoso-platform --output exports/resources.csv
 uv run python aks_report.py 360 --all                        # full estate, categorized
 uv run python aks_report.py 360 --all --no-metrics           # skip Monitor calls
 uv run python aks_report.py 360 --all --no-cost --no-metrics # Resource Graph only, fastest
@@ -195,6 +203,8 @@ uv run python aks_report.py vulnerabilities --cves cves.txt --offline
   Expect `fleet_cost.py` over 25 subs / 500 clusters to take **5-15 minutes** -
   that's pacing, not a hang; progress prints per subscription.
 - Resource Graph / ARM reads: exponential backoff with jitter on 429/5xx.
+- `resources` uses one paged Resource Graph query after an access check; it does
+  not make one ARM call per resource.
 - `cluster_360.py` inherits all of the above: subscription-scope cost queries
   (never per cluster), one AKS versions call per region, one paced Monitor call
   per running cluster. `--no-cost` / `--no-metrics` skip the slow sources.
@@ -213,8 +223,9 @@ uv run python aks_report.py vulnerabilities --cves cves.txt --offline
   subscription type.
 - Lots of `HTTP 429 ... backing off` lines -> normal under tenant-wide load;
   the script recovers by itself.
-- A subscription in the CSV that you cannot read -> Resource Graph silently
-  returns nothing for it; check counts on the ReadMe tab of each report.
+- A subscription in the CSV that you cannot read -> most Resource Graph reports
+  silently return nothing for it; `resources` fails explicitly after its access
+  check. For workbooks, check counts on the ReadMe tab.
 
 ## Testing without Azure
 

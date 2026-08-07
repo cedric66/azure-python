@@ -3,6 +3,7 @@ API responses and validates the generated workbooks. No Azure access needed.
 
   uv run python tests/smoke_test.py
 """
+import csv
 import datetime as dt
 import json
 import os
@@ -199,6 +200,9 @@ def _resource(rid, name, typ, sub, rg, loc, sku_name="", sku_tier="", tags=None)
     return {"id": rid, "name": name, "type": typ.lower(), "subscriptionId": sub,
             "resourceGroup": rg, "location": loc, "kind": "", "sku_name": sku_name,
             "sku_tier": sku_tier, "provisioning_state": "Succeeded",
+            "sku": {"name": sku_name, "tier": sku_tier} if sku_name or sku_tier else None,
+            "properties": {"provisioningState": "Succeeded",
+                           "fixtureText": "comma, quote \" and newline\nvalue"},
             "tags": tags or {}}
 
 
@@ -977,6 +981,7 @@ def main():
     # Offline: reads a kubectl YAML bundle, takes no Azure session, so it is not
     # in the fake_connect patch tuple below (same as container_os_eol).
     from reports.spot import workload_spot_readiness
+    from reports.platform import resource_export
     from reports.platform import subscription_rearch
     from reports.cost import tag_chargeback
     from reports.cost import utilization_idle
@@ -993,7 +998,8 @@ def main():
                 cost_efficiency, fleet_cost, fleet_inventory, governance,
                 network_ip_capacity, optimization_report, policy_report,
                 policy_components, spot_cluster_report, spot_savings, spot_eviction,
-                subscription_rearch, tag_chargeback, utilization_idle, version_eol):
+                resource_export, subscription_rearch, tag_chargeback, utilization_idle,
+                version_eol):
         mod.connect = fake_connect
 
     from openpyxl import Workbook, load_workbook
@@ -1023,6 +1029,46 @@ def main():
         print("    OK -> %s  sheets=%s" % (os.path.basename(path), wb.sheetnames))
 
     base = ["--csv", csv_path, "--out", out]
+
+    def run_resource_csv(mod, argv):
+        name = mod.__name__
+        print("\n=== %s %s ===" % (name, " ".join(argv)))
+        before = set(os.listdir(out)) if os.path.isdir(out) else set()
+        path = mod.main(argv)
+        new = [f for f in os.listdir(out) if f not in before]
+        new_csv = [f for f in new if f.endswith(".csv")]
+        _expect(len(new_csv) == 1 and os.path.abspath(path) ==
+                os.path.abspath(os.path.join(out, new_csv[0])),
+                "%s: expected exactly one returned CSV, got %s" % (name, new))
+        with open(path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+            _expect(reader.fieldnames == resource_export.CSV_COLUMNS,
+                    "resource CSV columns changed: %s" % reader.fieldnames)
+        expected = [r for r in RESOURCES if r["subscriptionId"] == S1]
+        _expect(len(rows) == len(expected),
+                "resource CSV should contain every selected-sub resource: %d != %d"
+                % (len(rows), len(expected)))
+        _expect({r["subscription_id"] for r in rows} == {S1},
+                "resource CSV leaked another subscription")
+        cluster = next(r for r in rows if r["name"] == "aks-dev-01")
+        _expect(json.loads(cluster["tags_json"]) == {"environment": "dev"},
+                "resource tags must round-trip as JSON: %s" % cluster["tags_json"])
+        props = json.loads(cluster["properties_json"])
+        _expect(props["fixtureText"] == "comma, quote \" and newline\nvalue",
+                "nested properties must survive CSV/JSON quoting: %s" % props)
+        disk = next(r for r in rows if r["name"] == "aks-osdisk-a1")
+        _expect(json.loads(disk["sku_json"])["name"] == "P30",
+                "resource SKU must survive as JSON: %s" % disk["sku_json"])
+        print("    OK -> %s  rows=%d" % (os.path.basename(path), len(rows)))
+
+    run_resource_csv(aks_report, ["resources"] + base + ["--subs", "contoso-platform"])
+
+    try:
+        resource_export.main(base + ["--all"])
+        _expect(False, "resources with multiple subscriptions should exit(2)")
+    except SystemExit as e:
+        _expect(e.code == 2, "resources multi-sub guard should exit(2), got %s" % e.code)
 
     import azrep.subs as sub_helpers
     _expect(sub_helpers.infer_env_from_name("aks-d-01") == "dev",

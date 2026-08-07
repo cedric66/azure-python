@@ -6,6 +6,7 @@ scripts remain importable modules so the code stays small and maintainable.
 Examples:
   uv run python aks_report.py
   uv run python aks_report.py inventory --all
+  uv run python aks_report.py resources --subs contoso-platform
   uv run python aks_report.py cost --subs contoso-platform --env dev
   uv run python aks_report.py deepdive --env dev --cluster aks-dev-01
   uv run python aks_report.py design --cluster aks-dev-01 --all
@@ -199,6 +200,14 @@ REPORTS = [
         "description": "One subscription, ALL resources: orphan/idle/redundancy "
                        "findings, Advisor cost recs, actual-cost evidence and a "
                        "re-architecture narrative (.md) with savings estimates.",
+    },
+    {
+        "key": "resources",
+        "aliases": ("resource-export", "resources-csv", "subscription-resources"),
+        "module": "reports.platform.resource_export",
+        "title": "Subscription resource CSV",
+        "description": "One subscription: all Azure Resource Graph resources and "
+                       "their generic details, exported as CSV with nested JSON fields.",
     },
     {
         "key": "vulnerabilities",

@@ -31,6 +31,7 @@ Every report the launcher can run, what it answers, its data sources, and sample
 | `optimization_report.py` | Prioritized cost-optimization queue combining amortized cost, utilization, spot/RI/SP signals, stopped-billing, **control-plane tier** and **off-hours stop** candidates | Cost Mgmt, ARG, Monitor |
 | `cost_efficiency.py` | `efficiency`: ARG-cheap config-driven cost levers beyond spot - control-plane tier (Free/Standard/Premium), ephemeral OS disk conversion, SKU generation/family modernization (incl. ARM64), autoscaler & floor (min_count) hygiene, pool fragmentation; ranked recommendations with verify-before-move caveats | Resource Graph, Retail Prices API |
 | `subscription_rearch.py` | `rearch`: ONE subscription, ALL resources (not just AKS) - orphan/idle disks, public IPs, NICs, empty load balancers, stopped-not-deallocated VMs, stale snapshots, empty App Service plans, app gateways with no backend targets, subnet-less NAT gateways, database-less SQL elastic pools, VNet-link-less private DNS zones, unassociated NSGs/route tables, empty availability sets and resource groups (orphan filters adapted from the MIT `dolevshor/azure-orphan-resources` ARG catalog), geo-redundant nonprod storage, flat-rate firewalls/gateways, premium SQL, plus Azure Advisor cost recs; findings carry actual last-month cost and an estimated monthly saving, and a companion `.md` narrative (current-state per RG + Mermaid, findings by category, target-state moves) drives a re-architecture-for-cost-savings exercise | Resource Graph, Cost Mgmt, Azure Advisor, Retail Prices API |
+| `resource_export.py` | `resources`: ONE subscription, every resource visible in Azure Resource Graph, exported to CSV with common identity fields and full generic nested details retained as JSON cells | Resource Graph only |
 | `vulnerability_report.py` | Prisma XLSX/CVE-list enrichment and base-image/application/platform classification with remediation guidance | Prisma XLSX, classification rules, NVD/CISA KEV/EPSS |
 
 ## Report Field Examples
@@ -57,6 +58,21 @@ Common fields used across reports:
 | `PricingModel` | Cost category such as `OnDemand`, `Spot`, `Reservation`, or `SavingsPlan`. |
 | `Period` / `Month` | Daily or monthly cost period. Current month is month-to-date. |
 | `* %` fields | Excel percentage fields, usually formulas in the workbook. |
+
+### Subscription Resource CSV
+
+Command: `uv run python aks_report.py resources --subs contoso-platform`
+
+Output columns:
+`subscription_name, subscription_id, tenant_id, resource_group, name, type,
+location, id, kind, managed_by, sku_json, plan_json, identity_json, zones_json,
+extended_location_json, tags_json, properties_json`.
+
+Each CSV row is one Resource Graph `resources` record. The `*_json` columns
+preserve provider-specific nested objects and arrays without trying to flatten
+unrelated resource types into thousands of sparse columns. This is a generic
+Resource Graph snapshot; it is not a recursive live GET against every resource
+provider and therefore does not include secrets or all runtime state.
 
 ### Architecture Design Report
 

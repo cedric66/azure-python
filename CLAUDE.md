@@ -81,7 +81,8 @@ reports/             report modules, categorized into subpackages (each: docstri
   security/          governance, conformance, policy_report, policy_components,
                      vulnerability_report
   lifecycle/         version_eol, container_os_eol, aks_lifecycle
-  platform/          architecture_design, network_ip_capacity, subscription_rearch
+  platform/          architecture_design, network_ip_capacity, subscription_rearch,
+                     resource_export (one-sub Resource Graph snapshot -> CSV)
 examples/            *.example.* config/rule templates (sandbox, report_style,
                      teams, vulnerability_classification, subscriptions); the live
                      subscriptions.csv is a gitignored copy of subscriptions.example.csv
@@ -137,6 +138,7 @@ the `module` column below is the bare filename.
 | optimization | optimization_report.py | Cost Mgmt + ARG + Monitor; candidate queue incl. CONTROL_PLANE_TIER (TIER_HOURLY rate) + OFFHOURS_STOP_CANDIDATE (--offhours-pct 0.65, --no-tier-candidates gates the tier type) |
 | efficiency | cost_efficiency.py | ARG + Retail Prices only; config-driven levers beyond spot: control-plane tier, ephemeral OS disk, SKU modernization, autoscaler/floor hygiene, pool fragmentation; layered (Scorecard -> per-lever summary tabs -> Recommendations -> NodePools ref) |
 | rearch | subscription_rearch.py | ARG (all resources + advisorresources) + Cost Mgmt (per-ResourceId+ServiceName) + Advisor; ONE sub only; FINDINGS engine + .md narrative (Mermaid) |
+| resources | resource_export.py | ARG only; ONE sub only; full generic resource rows -> UTF-8 CSV, nested fields as canonical JSON |
 | container-eol | container_os_eol.py | endoflife.date (no Azure) |
 | aks-lifecycle | aks_lifecycle.py | MS Learn pages + GitHub releases (no Azure) |
 | vulnerabilities | vulnerability_report.py | Prisma XLSX + NVD/KEV/EPSS (no Azure) |
@@ -535,6 +537,14 @@ IDLE CAPACITY, COST HOTSPOT, UPGRADE SOON, HYGIENE REVIEW, HEALTHY; plus
   are adapted from dolevshor/azure-orphan-resources (MIT); empty-RG detection
   is computed in Python from RG_TAGS_KQL minus RGs seen in ALL_RESOURCES (no
   extra query).
+- `resources` (resource_export) is the CSV-only report. It validates that its
+  ONE selected subscription is visible with SUB_NAMES_KQL, then runs one
+  skip-token-paged `resources` query with scalar `id` plus the generic dynamic
+  fields. Do not flatten heterogeneous provider properties: stable `*_json`
+  columns preserve them without an unbounded sparse schema. Output is written
+  atomically as UTF-8 BOM CSV. It is a Resource Graph snapshot, not recursive
+  provider GET enrichment. Smoke must exercise launcher dispatch, JSON/CSV
+  quoting, selected-sub isolation, and the multi-sub guard.
 - `policy-components` (policy_components) drills one initiative to its non-compliant
   COMPONENTS. componentPolicyStates is a SEPARATE data-plane resource with its own
   api-version `2022-04-01` (policyStates stays `2019-10-01`); component records only

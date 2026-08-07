@@ -4,6 +4,28 @@ _[← Back to the README](../README.md)_
 
 How workbooks are laid out, the charts they carry, Markdown->DOCX/PDF conversion, and the architecture-design companion files.
 
+## Subscription Resource CSV
+
+`resources` is the one report that emits CSV instead of XLSX:
+
+```bash
+uv run python aks_report.py resources --subs contoso-platform
+uv run python aks_report.py resources --subs contoso-platform --output exports/resources.csv
+```
+
+It writes one row per resource visible in Azure Resource Graph. Stable scalar
+columns identify the subscription, resource group, resource, type, location,
+and ARM ID. Heterogeneous fields are losslessly serialized within
+`sku_json`, `plan_json`, `identity_json`, `zones_json`,
+`extended_location_json`, `tags_json`, and `properties_json` cells. The file is
+UTF-8 with a BOM for Excel compatibility and is written only after all Resource
+Graph pages have been fetched successfully.
+
+This is a Resource Graph snapshot, not a recursive provider-specific ARM GET.
+It reflects Resource Graph/RBAC coverage and eventual consistency, omits
+secrets, and may not contain live runtime or instance-view state. Very large
+JSON property cells remain valid CSV even if Excel truncates their display.
+
 ## Workbook Layout
 
 Every workbook follows the same four-section tab layout, enforced at save time:
